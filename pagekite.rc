@@ -1,4 +1,4 @@
-# Sample pageKite config
+# PageKite config
 ###############################################################################
 
 
@@ -10,17 +10,23 @@ httppass=Secret
 frontends=1:frontends.b5p.us:443
 dyndns=pagekite.net
 
-# Uncomment this to enable TLS encryption for your tunnel
+# Enable TLS encryption for your tunnel, comment out for a plaintext tunnel
 fe_certname=frontends.b5p.us
 
 
 ###############################################################################
 # Back-end definitions follow.
 #
+# The first line shows how to define a basic HTTP pagekite backend.
 # If you have a TLS-enabled web-server as well, commenting out the second
 # line will probably suffice to enable the pageKite for it too.
 # The third line shows how to define a raw port backend. This example tunnels
-# SSH over pagekite.
+# SSH over pagekite. You will need to use a ssh client that supports HTTP 
+# proxy connect.
+#
+# You can have multiple backends for the same protocol as long as they 
+# have different pagekite names.
+#
 # See http://pagekite.net/docs/pkPy for more information on defining backends
 # and how to use raw ports.
 #
