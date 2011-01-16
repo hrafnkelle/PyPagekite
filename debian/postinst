@@ -23,7 +23,8 @@ fi
 
 case "$1" in
     configure)
-	chmod 600 /etc/pagekite/pagekite.rc
+	chmod 644 /etc/pagekite/pagekite.rc
+	chmod 600 /etc/pagekite/local.rc
     ;;
 
     abort-upgrade|abort-remove|abort-deconfigure)
