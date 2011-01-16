@@ -1,5 +1,5 @@
 SHELL = /bin/sh
-ETC = $(DESTDIR)/etc
+ETC = $(DESTDIR)/etc/pagekite/
 SBIN = $(DESTDIR)/usr/sbin
 
 all:
@@ -10,7 +10,8 @@ pkg: debian/changelog
 install:
 	install -d $(SBIN) $(ETC)
 	install pagekite.py $(SBIN)
-	install -m644 pagekite.rc $(ETC)
+	install -m600 pagekite.rc $(ETC)
+	install -m644 pagekite.ca-cert $(ETC)
 
 mrp:
 	debian/rules clean
