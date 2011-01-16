@@ -13,6 +13,9 @@ set -e
 # for details, see http://www.debian.org/doc/debian-policy/ or
 # the debian-policy package
 
+if dpkg-maintscript-helper supports rm_conffile 2>/dev/null; then
+  dpkg-maintscript-helper rm_conffile /etc/pagekite.rc 0.3.9-1 -- "$@"
+fi
 
 case "$1" in
     install|upgrade)
