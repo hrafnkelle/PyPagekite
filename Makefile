@@ -11,7 +11,8 @@ install:
 	install -d $(SBIN) $(ETC)
 	install pagekite.py $(SBIN)
 	install -m600 pagekite.rc $(ETC)
-	install -m644 pagekite.ca-cert $(ETC)
+	install -m600 local.rc $(ETC)
+	install -m644 pagekite.net.ca_cert $(ETC)
 
 mrp:
 	debian/rules clean
