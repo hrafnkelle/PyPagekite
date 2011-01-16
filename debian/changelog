@@ -1,11 +1,19 @@
+pagekite (0.3.10-1) lucid; urgency=low
+
+  * .rc moved into /etc/pagekite/
+  * .rc split into global and local stuff
+  * cacert in a separate file 
+  * added a manpage
+
+ -- Hrafnkell Eiriksson <he@klaki.net>  Sun, 16 Jan 2011 23:44:47 +0000
+
 pagekite (0.3.9-1) lucid; urgency=low
 
   [ Hrafnkell ]
   * logrotate support
   * Set 600 permissions to /etc/pagekite.rc
 
-
- -- Hrafnkell Eiriksson <he@klaki.net>  Thu, 06 Jan 2011 00:52:01 +0000
+ -- Hrafnkell <he@myther-main>  Wed, 05 Jan 2011 17:15:49 +0000
 
 pagekite (0.3.8-2) lucid; urgency=low
 
