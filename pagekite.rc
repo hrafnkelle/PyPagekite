@@ -17,6 +17,6 @@ fe_certname=frontends.b5p.us
 # then uncomment the following line.
 # ca_cert=/etc/pagekite/pagekite.net.ca_cert
 
-# Local defintions are found in the local.rc
-# This includes your backend defintions and the local http ui settings
+# Local definitions are found in the local.rc
+# This includes your backend definitions and the local http ui settings
 optfile=/etc/pagekite/local.rc
