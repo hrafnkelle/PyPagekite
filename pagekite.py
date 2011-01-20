@@ -100,7 +100,7 @@
 ###############################################################################
 #
 PROTOVER = '0.8'
-APPVER = '0.3.10'
+APPVER = '0.3.11+github'
 AUTHOR = 'Bjarni Runar Einarsson, http://bre.klaki.net/'
 WWWHOME = 'http://pagekite.net/'
 DOC = """\
@@ -252,12 +252,11 @@ DYNDNS = {
                    '?hostname=%(domain)s&myip=%(ips)s&sign=%(sign)s'),
   'beanstalks.net': ('http://up.b5p.us/'
                      '?hostname=%(domain)s&myip=%(ips)s&sign=%(sign)s'),
-  'dyndns.org': ('https://%(username)s:%(password)s@members.dyndns.org'
+  'dyndns.org': ('https://%(user)s:%(pass)s@members.dyndns.org'
                  '/nic/update?wildcard=NOCHG&backmx=NOCHG'
                  '&hostname=%(domain)s&myip=%(ip)s'),
-  'no-ip.com': ('https://%(username)s:%(password)s@members.dyndns.org'
-                '/nic/update?wildcard=NOCHG&backmx=NOCHG'
-                '&hostname=%(domain)s&myip=%(ip)s'),
+  'no-ip.com': ('https://%(user)s:%(pass)s@dynupdate.no-ip.com'
+                '/nic/update?hostname=%(domain)s&myip=%(ip)s'),
 }
 
 
@@ -927,6 +926,9 @@ class HttpUiThread(threading.Thread):
     self.httpd.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     self.serve = True
 
+    global SELECTABLES
+    SELECTABLES = {}
+
   def quit(self):
     self.serve = False
     knock = rawsocket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1044,7 +1046,7 @@ def obfuIp(ip):
 
 selectable_id = 0
 buffered_bytes = 0
-SELECTABLES = {}
+SELECTABLES = None
 
 class Selectable(object):
   """A wrapper around a socket, for use with select."""
@@ -1067,9 +1069,6 @@ class Selectable(object):
     self.peeking = False
     self.peeked = 0
 
-    # FIXME: This should go away after testing!
-    self.lastio = ['', '']
-
     global selectable_id
     selectable_id += 1
     self.sid = selectable_id
@@ -1084,13 +1083,10 @@ class Selectable(object):
     self.zlevel = 1
     self.zreset = False
 
-    SELECTABLES[selectable_id] = self
-    old = selectable_id-50
-    ancient = selectable_id-5000
-    if old in SELECTABLES:
-      sel = SELECTABLES[old]
-      if sel.dead or (sel.all_out + sel.wrote_bytes) == 0: del SELECTABLES[old]
-    if ancient in SELECTABLES: del SELECTABLES[ancient]
+    if SELECTABLES is not None:
+      old = selectable_id-150
+      if old in SELECTABLES: del SELECTABLES[old]
+      SELECTABLES[selectable_id] = self
 
     global gYamon
     self.countas = 'selectables_live'
@@ -1124,8 +1120,6 @@ class Selectable(object):
             '<b>Bytes in / out</b>: %s / %s<br>'
             '<b>Created</b>: %s<br>'
             '<b>Status</b>: %s<br>'
-            '<pre><b>Last recv:</b>\n%s</pre>'
-            '<pre><b>Last sent:</b>\n%s</pre>'
             '\n') % (self.zw and ('level %d' % self.zlevel) or 'off',
                      self.dead and '-' or (obfuIp(peer[0]), peer[1]),
                      self.dead and '-' or (obfuIp(sock[0]), sock[1]),
@@ -1133,9 +1127,7 @@ class Selectable(object):
                      fmt_size(self.all_out + self.wrote_bytes),
                      time.strftime('%Y-%m-%d %H:%M:%S',
                                    time.localtime(self.created)),
-                     self.dead and 'dead' or 'alive',
-                     escape_html(self.lastio[0]),
-                     escape_html(self.lastio[1]))
+                     self.dead and 'dead' or 'alive')
 
   def ResetZChunks(self):
     if self.zw:
@@ -1250,7 +1242,6 @@ class Selectable(object):
     if data is None or data == '':
       return False
     else:
-      self.lastio[0] = data
       if not self.peeking:
         self.read_bytes += len(data)
         if self.read_bytes > 1024000: self.LogTraffic()
@@ -1268,7 +1259,6 @@ class Selectable(object):
       return
 
     sending = self.write_blocked+(''.join(data))
-    self.lastio[1] = sending
     sent_bytes = 0
     if sending:
       try:
@@ -1742,7 +1732,6 @@ class Tunnel(ChunkParser):
         return None
       data += buf
       self.read_bytes += len(buf)
-      self.lastio[0] = data
     return data
 
   def _Connect(self, server, conns, tokens=None):
@@ -2560,6 +2549,7 @@ class PageKite(object):
   def FallDown(self, message, help=True, noexit=False):
     if self.conns and self.conns.auth: self.conns.auth.quit()
     if self.ui_httpd: self.ui_httpd.quit()
+    self.conns = self.ui_httpd = None
     if help:
       print DOC
       print '*****'
@@ -2727,7 +2717,9 @@ class PageKite(object):
         if arg.startswith('http'):
           self.dyndns = (arg, {'user': '', 'pass': ''})
         elif '@' in arg:
-          usrpwd, provider = arg.split('@', 1)
+          splits = arg.split('@')
+          provider = splits.pop()
+          usrpwd = '@'.join(splits)
           if provider in DYNDNS: provider = DYNDNS[provider]
           if ':' in usrpwd:
             usr, pwd = usrpwd.split(':', 1)
@@ -2786,6 +2778,8 @@ class PageKite(object):
             bid = '%s:%s' % (proto.lower(), domain.lower())
 
           backend = '%s:%s' % (bhost.lower(), bport)
+          if bid in self.backends:
+            raise ConfigError("Same backend/domain defined twice: %s" % bid)
           self.backends[bid] = (proto.lower(), domain.lower(), backend, secret)
 
       elif opt == '--domain':
@@ -2793,6 +2787,8 @@ class PageKite(object):
         if protos in ('*', ''): protos = ','.join(self.server_protos)
         for proto in protos.split(','): 
           bid = '%s:%s' % (proto, domain)
+          if bid in self.backends:
+            raise ConfigError("Same backend/domain defined twice: %s" % bid)
           self.backends[bid] = (proto, domain, None, secret)
 
       elif opt == '--noprobes': self.no_probes = True
@@ -3188,6 +3184,7 @@ def Main(pagekite, configure):
           configure(pk)
         except Exception, e:
           raise ConfigError(e)
+
         pk.Start()
 
       except (ValueError, ConfigError, getopt.GetoptError), msg:
