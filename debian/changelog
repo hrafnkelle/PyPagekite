@@ -1,3 +1,11 @@
+pagekite (0.3.12-1) lucid; urgency=low
+
+  [ Hrafnkell ]
+  * frontend.rc example in /usr/share/pagekite/ 
+  * pagekite.py moved from /usr/sbin to /usr/bin 
+
+ -- Hrafnkell Eiriksson <he@klaki.net>  Sat, 22 Jan 2011 14:45:38 +0000
+
 pagekite (0.3.10-1) lucid; urgency=low
 
   * .rc moved into /etc/pagekite/
