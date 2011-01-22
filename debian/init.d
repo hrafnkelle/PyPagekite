@@ -18,7 +18,7 @@
 PATH=/sbin:/usr/sbin:/bin:/usr/bin
 DESC="PageKite backend"
 NAME=pagekite.py
-DAEMON=/usr/sbin/$NAME
+DAEMON=/usr/bin/$NAME
 PIDFILE=/var/run/$NAME.pid
 DAEMON_ARGS="--pidfile=$PIDFILE --clean --optfile=/etc/pagekite/pagekite.rc"
 SCRIPTNAME=/etc/init.d/$NAME
