@@ -6,7 +6,7 @@ all:
 	echo "Don't panic"
 
 pkg: debian/changelog
-	dpkg-buildpackage
+	dpkg-buildpackage -us -uc
 install:
 	install -d $(BIN) $(ETC)
 	install pagekite.py $(BIN)
