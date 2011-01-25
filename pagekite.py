@@ -100,7 +100,7 @@
 ###############################################################################
 #
 PROTOVER = '0.8'
-APPVER = '0.3.12'
+APPVER = '0.3.13'
 AUTHOR = 'Bjarni Runar Einarsson, http://bre.klaki.net/'
 WWWHOME = 'http://pagekite.net/'
 DOC = """\
@@ -1209,8 +1209,9 @@ class Selectable(object):
     while len(discard) < eat_bytes:
       try:
         discard += self.fd.recv(eat_bytes - len(discard))
-      except socket.error, err:
-        LogDebug('Error reading (%d/%d) socket: %s' % (eat_bytes, self.peeked, err))
+      except socket.error, (errno, msg):
+        LogDebug('Error reading (%d/%d) socket: %s (errno=%s)' % (
+                   eat_bytes, self.peeked, msg, errno))
         time.sleep(0.1)
 
     self.peeked -= eat_bytes
@@ -1235,9 +1236,12 @@ class Selectable(object):
     except (SSL.Error, SSL.ZeroReturnError, SSL.SysCallError), err:
       LogDebug('Error reading socket (SSL): %s' % err)
       return False
-    except socket.error, err:
-      LogError('Error reading socket: %s' % err)
-      return False
+    except socket.error, (errno, msg):
+      if errno in self.HARMLESS_ERRNOS:
+        return True
+      else:
+        LogError('Error sending: %s (errno=%s)' % (msg, errno))
+        return False
 
     if data is None or data == '':
       return False
@@ -1253,10 +1257,10 @@ class Selectable(object):
     buffered_bytes -= len(self.write_blocked)
 
     # If we're already blocked, just buffer unless explicitly asked to flush.
-    if not try_flush and self.write_blocked:
+    if len(self.write_blocked) > 0 and not try_flush:
       self.write_blocked += ''.join(data)
       buffered_bytes += len(self.write_blocked)
-      return
+      return True
 
     sending = self.write_blocked+(''.join(data))
     sent_bytes = 0
@@ -1265,16 +1269,15 @@ class Selectable(object):
         sent_bytes = self.fd.send(sending)
         self.wrote_bytes += sent_bytes
       except IOError, err:
-        if err.errno in self.HARMLESS_ERRNOS:
-          pass
-        else:
-          LogError('Error sending: %s' % '%s' % err)
+        if err.errno not in self.HARMLESS_ERRNOS:
+          LogError('Error sending: %s' % err)
           return False
       except (SSL.WantWriteError, SSL.WantReadError), err:
         pass
-      except socket.error, err:
-        LogError('Error sending: %s' % '%s' % err)
-        return False
+      except socket.error, (errno, msg):
+        if errno not in self.HARMLESS_ERRNOS:
+          LogError('Error sending: %s (errno=%s)' % (msg, errno))
+          return False
       except (SSL.Error, SSL.ZeroReturnError, SSL.SysCallError), err:
         LogDebug('Error sending (SSL): %s' % err)
         return False
@@ -1309,7 +1312,8 @@ class Selectable(object):
     return self.Send(['%x%s\r\n%s' % (len(sdata), rst, sdata)])
 
   def Flush(self):
-    while self.write_blocked and self.Send([], try_flush=True): pass
+    while len(self.write_blocked) > 0 and self.Send([], try_flush=True): pass
+    self.write_blocked = ''
 
 
 class Connections(object):
@@ -1367,7 +1371,7 @@ class Connections(object):
 
   def Blocked(self):
     # FIXME: This is O(n)
-    return [s.fd for s in self.conns if s.fd and s.write_blocked]
+    return [s.fd for s in self.conns if s.fd and len(s.write_blocked) > 0]
 
   def CleanFds(self):
     evil = []
@@ -1688,7 +1692,7 @@ class Tunnel(ChunkParser):
       return None
 
     except socket.error, err:
-      self.LogError('Discarding connection: %s')
+      self.LogError('Discarding connection: %s' % err)
       return None
 
     self.CountAs('backends_live')
@@ -2027,8 +2031,8 @@ class UserConn(Selectable):
     Selectable.Cleanup(self)
 
   def Disconnect(self):
-    self.conns.Remove(self)
     self.Flush()
+    self.conns.Remove(self)
     Selectable.Cleanup(self)
 
   def _FrontEnd(conn, address, proto, host, on_port, body, conns):
@@ -3076,10 +3080,11 @@ class PageKite(object):
           conn = conns.Connection(socket)
           if buffered_bytes < 1024 * self.buffer_max:
             if conn and conn.ReadData() is False:
-              conn.Cleanup()
-              conns.Remove(conn)
+              if len(conn.write_blocked) == 0:
+                conn.Cleanup()
+                conns.Remove(conn)
           else:
-            # Pause to let buffers clear...
+            # FIXME: Pause to let buffers clear...
             time.sleep(0.1)
 
       last_loop = now
@@ -3221,8 +3226,13 @@ def Main(pagekite, configure):
       if crashes > 9: crashes = 9
 
 def Configure(pk):
+  if '--appver' in sys.argv:
+    print '%s' % APPVER
+    sys.exit(0)
+
   if '--clean' not in sys.argv:
     if os.path.exists(pk.rcfile): pk.ConfigureFromFile()
+
   pk.Configure(sys.argv[1:])
   pk.CheckConfig()
 
