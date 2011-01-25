@@ -1,3 +1,20 @@
+pagekite (0.3.13-1) lucid; urgency=low
+
+  [ Bjarni R. Einarsson ]
+  * Moving past 0.3.12
+  * Dealing with broken socket.error (no errno set on some errors)
+  * Cleaning up socket.error errno handling
+  * Avoiding infinite flush loops on closed connections that were
+    blocked
+  * Recording socket.error bugfix
+  * Added --appver
+  * Moving --appver so it short-circuits everything
+  * Preparing 0.3.13 release
+
+  [ Hrafnkell Eiriksson ]
+
+ -- Hrafnkell Eiriksson <he@klaki.net>  Tue, 25 Jan 2011 21:18:25 +0000
+
 pagekite (0.3.12-2) UNRELEASED; urgency=low
 
   * Set group/owner of /var/log/pagekite to daemon:daemon
