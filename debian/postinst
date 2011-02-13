@@ -26,6 +26,7 @@ case "$1" in
 	chmod 644 /etc/pagekite/pagekite.rc
 	chmod 600 /etc/pagekite/local.rc
 	chown daemon:daemon /var/log/pagekite
+	chmod 755 /var/log/pagekite
     ;;
 
     abort-upgrade|abort-remove|abort-deconfigure)
