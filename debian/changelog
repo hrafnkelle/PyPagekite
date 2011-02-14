@@ -1,3 +1,22 @@
+pagekite (0.3.14-1) lucid; urgency=low
+
+  [ Bjarni R. Einarsson ]
+  * Moving past v. 0.3.13
+  * Use a frameset instead of a redirect for fancy errors
+  * Recording frameset change
+  * Allowing catch-all backends named "default"
+  * Documented catch-all backends, renamed to "unknown"
+  * Moved tunnel management to own thread, added timeoutes
+  * Added --rawports=virtual for HTTP CONNECT-only raw ports
+  * Probing virtual makes no sense
+  * Made pings measure server response time and time out quickly
+  * Preparing v0.3.14
+
+  [ Hrafnkell Eiriksson ]
+  * nocreate option added to logrotate
+
+ -- Hrafnkell Eiriksson <he@klaki.net>  Mon, 14 Feb 2011 12:33:04 +0000
+
 pagekite (0.3.13-1) lucid; urgency=low
 
   [ Bjarni R. Einarsson ]
