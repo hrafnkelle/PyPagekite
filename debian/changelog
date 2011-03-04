@@ -1,3 +1,49 @@
+pagekite (0.3.15-1) lucid; urgency=low
+
+  [ Bjarni R. Einarsson ]
+  * Moving past 0.3.14
+  * Allowing data to tricle even when buffers are full
+  * Tweaking the trickle/delay slightly
+  * Adding debugging messages
+  * Make sure blocked buffer is zeroed on fatal Send error
+  * Oops
+  * Fixing crashes in log parser
+  * Adding write speed tracking, reorganizing flow control
+  * Have flow-control which appears to work
+  * Simplifying throttle logic to always throttle when asked
+  * Minor tweaks to throttling code, fixed comments and tweaked crash
+    reporter
+  * Throttle at back-end as well as front
+  * Misguided flushing code is a problem
+  * Fixing stupidity in the flushing code
+  * Improved SSL documentation to describe key and cert creation
+  * Adding missing --httpd PageKite parameter
+  * Avoid crashes when SNI ClientHello is truncated
+  * Making control-panel paths absolute
+  * Nicer error handling
+  * Began work on refactoring pagekite.py to handle EOF correctly
+  * First cut at improved EOF handling
+  * New EOF handling eems to work
+  * Proper disconnect handling for tunnels, preparing fast disconnect on
+    network change
+  * SHUT_RD/SHUT_WR/SHUT_RDRW for really old Pythons
+  * Squashing some buglets and reducing log spam
+  * PING/PONG
+  * PING/PONG cleanup
+  * Cleaning up log spam
+  * Fixing shutdown on pyOpenSSL sockets
+  * Prepping v0.3.15
+
+  [ Hrafnkell Eiriksson ]
+
+ -- Hrafnkell Eiriksson <he@klaki.net>  Fri, 04 Mar 2011 23:06:04 +0000
+
+pagekite (0.3.15-1) lucid; urgency=low
+
+  * 
+
+ -- Hrafnkell Eiriksson <he@klaki.net>  Fri, 04 Mar 2011 23:04:35 +0000
+
 pagekite (0.3.14-1) lucid; urgency=low
 
   [ Bjarni R. Einarsson ]
@@ -15,7 +61,11 @@ pagekite (0.3.14-1) lucid; urgency=low
   [ Hrafnkell Eiriksson ]
   * nocreate option added to logrotate
 
- -- Hrafnkell Eiriksson <he@klaki.net>  Mon, 14 Feb 2011 12:33:04 +0000
+  [ Hrafnkell ]
+
+  [ Hrafnkell Eiriksson ]
+
+ -- Hrafnkell Eiriksson <he@klaki.net>  Fri, 04 Mar 2011 22:54:15 +0000
 
 pagekite (0.3.13-1) lucid; urgency=low
 
