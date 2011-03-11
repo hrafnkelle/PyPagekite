@@ -1,3 +1,31 @@
+pagekite (0.3.16-1) lucid; urgency=low
+
+  [ Bjarni R. Einarsson ]
+  * Created script for accessing VNC directly over PageKite
+  * Making self-references a little more legible
+  * More quotation marks
+  * Updated path to intro
+  * It is 2011
+  * First step towards IPv6 compatibility
+  * Moving version past 0.3.15
+  * Explicitly enable IPv6/IPv4 compatibility
+  * More IPv6 tweaks
+  * Licensing clarification
+  * Licensing clarification
+  * Placing in the Public Domain
+  * Mis-wrote CC-BY-SA
+  * Fixing python ssl tunnel killing bug
+  * Documenting bugfix
+  * Force send buffering when using Tor
+  * Fixed bug in --all
+  * Fixing crash if trying to kill an already dead HTTP ui
+  * Use socat for SSL tunneling if possible
+  * Version bumped to 0.3.16
+  * Added warning about unencrypted connections
+  * Fixing dead conn cleanup bug
+
+ -- Hrafnkell Eiriksson <he@klaki.net>  Fri, 11 Mar 2011 23:16:04 +0000
+
 pagekite (0.3.15-1) lucid; urgency=low
 
   [ Bjarni R. Einarsson ]
