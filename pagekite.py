@@ -101,7 +101,7 @@
 ###############################################################################
 #
 PROTOVER = '0.8'
-APPVER = '0.3.15'
+APPVER = '0.3.16'
 AUTHOR = 'Bjarni Runar Einarsson, http://bre.klaki.net/'
 WWWHOME = 'http://pagekite.net/'
 DOC = """\
@@ -304,11 +304,14 @@ if not 'SHUT_RD' in dir(socket):
 # objects. If that fails, look for Python 2.6+ native ssl support and 
 # create a compatibility wrapper. If both fail, bomb with a ConfigError
 # when the user tries to enable anything SSL-related.
+SEND_MAX_BYTES = 16 * 1024
+SEND_ALWAYS_BUFFERS = False
 try: 
   from OpenSSL import SSL
   def SSL_Connect(ctx, sock,
                   server_side=False, accepted=False, connected=False,
                   verify_names=None):
+    LogDebug('TLS is provided by pyOpenSSL')
     if verify_names:
       def vcb(conn, x509, errno, depth, rc):
         # FIXME: No ALT names, no wildcards ...
@@ -330,6 +333,12 @@ try:
 except ImportError:
   try:
     import ssl
+
+    # Because the native Python ssl module does not expose WantWriteError,
+    # we need this to keep tunnels from shutting down when busy.
+    SEND_ALWAYS_BUFFERS = True
+    SEND_MAX_BYTES = 4 * 1024
+
     class SSL(object):
       SSLv23_METHOD = ssl.PROTOCOL_SSLv23
       TLSv1_METHOD = ssl.PROTOCOL_TLSv1
@@ -367,6 +376,7 @@ except ImportError:
     def SSL_Connect(ctx, sock,
                     server_side=False, accepted=False, connected=False,
                     verify_names=None):
+      LogDebug('TLS is provided by native Python ssl')
       reqs = (verify_names and ssl.CERT_REQUIRED or ssl.CERT_NONE)
       fd = ssl.wrap_socket(sock, keyfile=ctx.privatekey_file, 
                                  certfile=ctx.certchain_file,
@@ -944,9 +954,12 @@ class HttpUiThread(threading.Thread):
 
   def quit(self):
     self.serve = False
-    knock = rawsocket(socket.AF_INET, socket.SOCK_STREAM)
-    knock.connect(self.ui_sspec)
-    knock.close()
+    try:
+      knock = rawsocket(socket.AF_INET, socket.SOCK_STREAM)
+      knock.connect(self.ui_sspec)
+      knock.close()
+    except Exception:
+      pass
 
   def run(self):
     while self.serve:
@@ -1054,8 +1067,8 @@ class HttpParser(object):
 
 
 def obfuIp(ip):
-  quads = ('%s' % ip).split('.')
-  return '~%s' % '.'.join([q for q in quads[2:]])
+  quads = ('%s' % ip).replace(':', '.').split('.')
+  return '~%s' % '.'.join([q for q in quads[-2:]])
 
 selectable_id = 0
 buffered_bytes = 0
@@ -1069,7 +1082,10 @@ class Selectable(object):
                      errno.EALREADY)
 
   def __init__(self, fd=None, address=None, on_port=None, maxread=16000):
-    self.SetFD(fd or rawsocket(socket.AF_INET, socket.SOCK_STREAM))
+    try:
+      self.SetFD(fd or rawsocket(socket.AF_INET6, socket.SOCK_STREAM), six=True)
+    except Exception:
+      self.SetFD(fd or rawsocket(socket.AF_INET, socket.SOCK_STREAM))
     self.address = address
     self.on_port = on_port
     self.created = self.bytes_logged = time.time()
@@ -1087,6 +1103,7 @@ class Selectable(object):
     self.write_blocked = ''
     self.write_speed = 102400
     self.write_eof = False
+    self.write_retry = None
 
     # Throttle reads and writes
     self.throttle_until = 0
@@ -1164,10 +1181,11 @@ class Selectable(object):
     self.zlevel = level
     self.zw = zlib.compressobj(level)
 
-  def SetFD(self, fd):
+  def SetFD(self, fd, six=False):
     self.fd = fd
     self.fd.setblocking(0)
     try:
+      if six: self.fd.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
       self.fd.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
       self.fd.setsockopt(socket.SOL_TCP, socket.TCP_KEEPIDLE, 60)
       self.fd.setsockopt(socket.SOL_TCP, socket.TCP_KEEPCNT, 10)
@@ -1326,7 +1344,7 @@ class Selectable(object):
     buffered_bytes -= len(self.write_blocked)
 
     # If we're already blocked, just buffer unless explicitly asked to flush.
-    if len(self.write_blocked) > 0 and not try_flush:
+    if (not try_flush) and (len(self.write_blocked) > 0 or SEND_ALWAYS_BUFFERS):
       self.write_blocked += ''.join(data)
       buffered_bytes += len(self.write_blocked)
       return True
@@ -1338,8 +1356,9 @@ class Selectable(object):
     sent_bytes = 0
     if sending:
       try:
-        sent_bytes = self.fd.send(sending)
+        sent_bytes = self.fd.send(sending[:(self.write_retry or SEND_MAX_BYTES)])
         self.wrote_bytes += sent_bytes
+        self.write_retry = None
       except IOError, err:
         if err.errno not in self.HARMLESS_ERRNOS:
           self.LogError('Error sending: %s' % err)
@@ -1347,9 +1366,9 @@ class Selectable(object):
           return False
         else:
 #         self.LogDebug('Problem sending: %s' % err)
-          pass
+          self.write_retry = len(sending)
       except (SSL.WantWriteError, SSL.WantReadError), err:
-        pass
+        self.write_retry = len(sending)
       except socket.error, (errno, msg):
         if errno not in self.HARMLESS_ERRNOS:
           self.LogError('Error sending: %s (errno=%s)' % (msg, errno))
@@ -1357,7 +1376,7 @@ class Selectable(object):
           return False
         else:
 #         self.LogDebug('Problem sending: %s (errno=%s)' % (msg, errno))
-          pass
+          self.write_retry = len(sending)
       except (SSL.Error, SSL.ZeroReturnError, SSL.SysCallError), err:
         self.LogDebug('Error sending (SSL): %s' % err)
         self.ProcessEofWrite()
@@ -1468,8 +1487,8 @@ class Connections(object):
     # FIXME: This is O(n)
     return [s.fd for s in self.conns if s.fd and len(s.write_blocked) > 0]
 
-  def Dead(self):
-    return [s.fd for s in self.conns if s.read_eof and s.write_eof and not s.write_blocked]
+  def DeadConns(self):
+    return [s for s in self.conns if s.read_eof and s.write_eof and not s.write_blocked]
 
   def CleanFds(self):
     evil = []
@@ -3051,6 +3070,10 @@ class PageKite(object):
           (host, port) = arg.split(':')
           socks.setdefaultproxy(socks.PROXY_TYPE_SOCKS5, host, int(port))
           self.socks_server = (host, port)
+          # This increases the odds of unrelated requests getting lumped
+          # together in the tunnel, which makes traffic analysis harder.
+          global SEND_ALWAYS_BUFFERS
+          SEND_ALWAYS_BUFFERS = True
         except Exception, e:
           raise ConfigError("Please instally SocksiPy: "
                             " http://code.google.com/p/socksipy-branch/")
@@ -3126,7 +3149,8 @@ class PageKite(object):
   def CheckAllTunnels(self, conns):
     missing = []
     for backend in self.backends:
-      if not conns.Tunnel(domain):
+      proto, domain = backend.split(':')
+      if not conns.Tunnel(proto, domain):
         missing.append(domain)
     if missing:
       self.FallDown('No tunnel for %s' % missing, help=False) 
@@ -3377,7 +3401,7 @@ class PageKite(object):
             conns.Remove(conn)
             conn.Cleanup()
 
-      for conn in conns.Dead():
+      for conn in conns.DeadConns():
         conns.Remove(conn)
         conn.Cleanup()
 

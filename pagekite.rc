@@ -1,5 +1,11 @@
 # PageKite config
 ###############################################################################
+#################################[ This file is placed in the Public Domain. ]#
+#
+#
+#isfrontend
+#ports=22,80,443,2222,8080,8081
+#protos=http,https,raw,websocket
 
 # Daemon config
 logfile=/var/log/pagekite/pagekite.log
