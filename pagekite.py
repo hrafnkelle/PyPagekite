@@ -101,7 +101,7 @@
 ###############################################################################
 #
 PROTOVER = '0.8'
-APPVER = '0.3.16'
+APPVER = '0.3.17+github'
 AUTHOR = 'Bjarni Runar Einarsson, http://bre.klaki.net/'
 WWWHOME = 'http://pagekite.net/'
 DOC = """\
@@ -129,11 +129,13 @@ Usage:
 
 Common Options:
 
- --optfile=X    -o X    Read options from file X. Default is ~/.pagekiterc.
+ --optfile=X    -o X    Read options from file X. Default is ~/.pagekite.rc.
+ --savefile=X   -S X    Read/write options from file X.
  --httpd=X:P    -H X:P  Enable the HTTP user interface on hostname X, port P.
  --pemfile=X    -P X    Use X as a PEM key for the HTTPS UI.
  --httppass=X   -X X    Require password X to access the UI.
  --nozchunks            Disable zlib tunnel compression.
+ --sslzlib              Enable zlib compression in OpenSSL.
  --buffers       N      Buffer at most N kB of back-end data before blocking.
  --logfile=F    -L F    Log to file F.
  --daemonize    -Z      Run as a daemon.
@@ -222,21 +224,23 @@ MAGIC_PREFIX = '/~:PageKite:~/'
 MAGIC_PATH = '%sv%s' % (MAGIC_PREFIX, PROTOVER)
 MAGIC_PATHS = (MAGIC_PATH, '/Beanstalk~Magic~Beans/0.2')
 
-OPT_FLAGS = 'o:H:P:X:L:ZI:fA:R:h:p:aD:U:NE:'
-OPT_ARGS = ['noloop', 'clean', 'nocrashreport',
-            'optfile=', 'httpd=', 'pemfile=', 'httppass=', 'errorurl=',
+OPT_FLAGS = 'o:S:H:P:X:L:ZI:fA:R:h:p:aD:U:NE:'
+OPT_ARGS = ['noloop', 'clean', 'nopyopenssl', 'nocrashreport',
+            'optfile=', 'savefile=',
+            'httpd=', 'pemfile=', 'httppass=', 'errorurl=',
             'logfile=', 'daemonize', 'nodaemonize', 'runas=', 'pidfile=',
             'isfrontend', 'noisfrontend', 'settings', 'defaults', 'domain=',
             'authdomain=', 'register=', 'host=',
             'ports=', 'protos=', 'portalias=', 'rawports=',
             'tls_default=', 'tls_endpoint=', 'fe_certname=', 'ca_certs=',
             'backend=', 'frontend=', 'frontends=', 'torify=', 'socksify=',
-            'new', 'all', 'noall', 'dyndns=', 'nozchunks',
+            'new', 'all', 'noall', 'dyndns=', 'nozchunks', 'sslzlib',
             'buffers=', 'noprobes']
 
-AUTH_ERRORS           = '128.'
-AUTH_ERR_USER_UNKNOWN = '128.0.0.0'
-AUTH_ERR_INVALID      = '128.0.0.1'
+AUTH_ERRORS           = '255.255.255.'
+AUTH_ERR_USER_UNKNOWN = '.0'
+AUTH_ERR_INVALID      = '.1'
+AUTH_QUOTA_MAX        = '255.255.254.255'
 
 VIRTUAL_PN = 'virtual'
 CATCHALL_HN = 'unknown'
@@ -246,12 +250,20 @@ LOOPBACK_BE = LOOPBACK_HN + ':2'
 LOOPBACK = {'FE': LOOPBACK_FE, 'BE': LOOPBACK_BE}
 
 BE_PROTO = 0
-BE_DOMAIN = 1
-BE_BACKEND = 2
-BE_SECRET = 3
+BE_PORT = 1
+BE_DOMAIN = 2
+BE_BACKEND = 3
+BE_SECRET = 4
+BE_STATUS = 5
+
+BE_STATUS_OK = 0
+BE_STATUS_BE_FAIL = 2
+BE_STATUS_NO_TUNNEL = 1
+BE_STATUS_DISABLED = -1
+BE_STATUS_UNKNOWN = -2
 
 DYNDNS = {
-  'pagekite.net': ('http://up.b5p.us/'
+  'pagekite.net': ('http://up.pagekite.net/'
                    '?hostname=%(domain)s&myip=%(ips)s&sign=%(sign)s'),
   'beanstalks.net': ('http://up.b5p.us/'
                      '?hostname=%(domain)s&myip=%(ips)s&sign=%(sign)s'),
@@ -307,6 +319,9 @@ if not 'SHUT_RD' in dir(socket):
 SEND_MAX_BYTES = 16 * 1024
 SEND_ALWAYS_BUFFERS = False
 try: 
+  if '--nopyopenssl' in sys.argv:
+    raise ImportError('pyOpenSSL disabled')
+
   from OpenSSL import SSL
   def SSL_Connect(ctx, sock,
                   server_side=False, accepted=False, connected=False,
@@ -317,7 +332,12 @@ try:
         # FIXME: No ALT names, no wildcards ...
         if errno != 0: return False
         if depth != 0: return True
-        return (x509.get_subject().commonName.lower() in verify_names)
+        commonName = x509.get_subject().commonName.lower()
+        cNameDigest = '%s/%s' % (commonName, x509.digest('sha1').replace(':','').lower())
+        if (commonName in verify_names) or (cNameDigest in verify_names):
+          LogDebug('Cert OK: %s' % (cNameDigest))
+          return True
+        return False
       ctx.set_verify(SSL.VERIFY_PEER | SSL.VERIFY_FAIL_IF_NO_PEER_CERT, vcb)
     else:
       def vcb(conn, x509, errno, depth, rc): return (errno == 0)
@@ -359,17 +379,24 @@ except ImportError:
 
     def SSL_CheckPeerName(fd, names):
       cert = fd.getpeercert()
+      certhash = sha1hex(fd.getpeercert(binary_form=True))
       if not cert: return None
       for field in cert['subject']:
         if field[0][0].lower() == 'commonname':
           name = field[0][1].lower()
-          if name in names: return name
+          namehash = '%s/%s' % (name, certhash)
+          if name in names or namehash in names:
+            LogDebug('Cert OK: %s' % (namehash))
+            return name
 
       if 'subjectAltName' in cert:
         for field in cert['subjectAltName']:
           if field[0].lower() == 'dns':
             name = field[1].lower()
-            if name in names: return name
+            namehash = '%s/%s' % (name, certhash)
+            if name in names or namehash in names:
+              LogDebug('Cert OK: %s' % (namehash))
+              return name
 
       return None
 
@@ -404,7 +431,28 @@ except ImportError:
         def __init__(self, method):
           raise ConfigError('Neither pyOpenSSL nor python 2.6+ ssl modules found!')
 
+
+def DisableSSLCompression():
+  # Hack to disable compression in OpenSSL and reduce memory usage *lots*.
+  # Source:
+  #   http://journal.paul.querna.org/articles/2011/04/05/openssl-memory-use/
+  try:
+    import ctypes
+    import glob
+    openssl = ctypes.CDLL(None, ctypes.RTLD_GLOBAL)
+    try:
+      f = openssl.SSL_COMP_get_compression_methods
+    except AttributeError:
+      ssllib = sorted(glob.glob("/usr/lib/libssl.so.*"))[0]
+      openssl = ctypes.CDLL(ssllib, ctypes.RTLD_GLOBAL)
+
+    openssl.SSL_COMP_get_compression_methods.restype = ctypes.c_void_p
+    openssl.sk_zero.argtypes = [ctypes.c_void_p]
+    openssl.sk_zero(openssl.SSL_COMP_get_compression_methods())
+  except Exception, e:
+    LogError('disableSSLCompression: Failed: %s' % e)
  
+
 # Different Python 2.x versions complain about deprecation depending on
 # where we pull these from.
 try:
@@ -417,11 +465,11 @@ try:
   def sha1hex(data):
     hl = hashlib.sha1()
     hl.update(data)
-    return hl.hexdigest()
+    return hl.hexdigest().lower()
 except ImportError:
   import sha
   def sha1hex(data):
-    return sha.new(data).hexdigest() 
+    return sha.new(data).hexdigest().lower()
 
 
 # YamonD is a part of PageKite.net's internal monitoring systems. It's not
@@ -454,22 +502,65 @@ except Exception:
 gSecret = None
 def globalSecret():
   global gSecret
-  if not gSecret: gSecret = '%8.8x%8.8x%8.8x' % (random.randint(0, 0x7FFFFFFE), 
-                                                 time.time(),
-                                                 random.randint(0, 0x7FFFFFFE))
+  if not gSecret:
+    # This always works...
+    gSecret = '%8.8x%8.8x%8.8x' % (random.randint(0, 0x7FFFFFFE), 
+                                   time.time(),
+                                   random.randint(0, 0x7FFFFFFE))
+
+    # Next, see if we can augment that with some real randomness.
+    try:
+      newSecret = sha1hex(open('/dev/random').read(16) + gSecret)
+      gSecret = newSecret
+      LogDebug('Seeded signatures using /dev/random, hooray!')
+    except:
+      try:
+        newSecret = sha1hex(os.urandom(64) + gSecret)
+        gSecret = newSecret
+        LogDebug('Seeded signatures using os.urandom(), hooray!')
+      except:
+        LogDebug('WARNING: Seeding signatures with time.time() and random.randint()')
+
   return gSecret
 
-def signToken(token=None, secret=None, payload='', length=36):
+TOKEN_LENGTH=36
+def signToken(token=None, secret=None, payload='', timestamp=None,
+              length=TOKEN_LENGTH):
   """
   This will generate a random token with a signature which could only have come
   from this server.  If a token is provided, it is re-signed so the original
   can be compared with what we would have generated, for verification purposes.
 
+  If a timestamp is provided it will be embedded in the signature to a
+  resolution of 10 minutes, and the signature will begin with the letter 't'
+
   Note: This is only as secure as random.randint() is random.
   """
   if not secret: secret = globalSecret()
-  if not token: token = '%8.8x' % (random.randint(0, 0x7FFFFFFD)+1)
-  return token[0:8] + sha1hex(secret + payload + token[0:8])[0:length-8]
+  if not token: token = sha1hex('%s%8.8x' % (globalSecret(),
+                                             random.randint(0, 0x7FFFFFFD)+1))
+  if timestamp:
+    tok = 't' + token[1:]
+    ts = '%x' % int(timestamp/600)
+    return tok[0:8] + sha1hex(secret + payload + ts + tok[0:8])[0:length-8]
+  else:
+    return token[0:8] + sha1hex(secret + payload + token[0:8])[0:length-8]
+
+def checkSignature(sign='', secret='', payload=''):
+  """
+  Check a signature for validity. When using timestamped signatures, we only
+  accept signatures from the current and previous windows.
+  """
+  if sign[0] == 't':
+    ts = int(time.time())
+    for window in (0, 1):
+      valid = signToken(token=sign, secret=secret, payload=payload,
+                        timestamp=(ts-(window*600)))
+      if sign == valid: return True
+    return False
+  else:
+    valid = signToken(token=sign, secret=secret, payload=payload)
+    return sign == valid
 
 
 class ConfigError(Exception):
@@ -490,12 +581,22 @@ def HTTP_PageKiteRequest(server, backends, tokens=None, nozchunks=False,
   tokens = tokens or {}
   for d in backends.keys():
     if backends[d][BE_BACKEND]:
-      token = d in tokens and tokens[d] or ''
-      data = '%s:%s:%s' % (d, signToken(token=globalSecret(),
-                                        payload=globalSecret(),
-                                        secret=server),
-                           token)
-      sign = signToken(secret=backends[d][BE_SECRET], payload=data, token=testtoken)
+
+      # A stable (for replay on challenge) but unguessable salt.
+      my_token = sha1hex(globalSecret() + server + backends[d][BE_SECRET]
+                         )[:TOKEN_LENGTH]
+
+      # This is the challenge (salt) from the front-end, if any.
+      server_token = d in tokens and tokens[d] or ''
+
+      # Our payload is the (proto, name) combined with both salts
+      data = '%s:%s:%s' % (d, my_token, server_token)
+
+      # Sign the payload with the shared secret (random salt).
+      sign = signToken(secret=backends[d][BE_SECRET],
+                       payload=data,
+                       token=testtoken)
+
       req.append('X-PageKite: %s:%s\r\n' % (data, sign))
 
   req.append('\r\n')
@@ -589,21 +690,24 @@ def HTTP_Unavailable(where, proto, domain, comment='', frame_url=None):
                          ['<html><body>', message, '</body></html>'])
 
 LOG = []
+LOG_LENGTH = 300
+LOG_THRESHOLD = 256 * 1024
 
 def LogValues(values, testtime=None):
-  words = [(kv[0], ('%s' % kv[1]).replace('\t', ' ')
-                                 .replace('\r', ' ')
-                                 .replace('\n', ' ')
-                                 .replace('; ', ', ')
-                                 .strip()) for kv in values]
-  words.append(('ts', '%x' % (testtime or time.time())))
+  words = [('ts', '%x' % (testtime or time.time()))]
+  words.extend([(kv[0], ('%s' % kv[1]).replace('\t', ' ')
+                                      .replace('\r', ' ')
+                                      .replace('\n', ' ')
+                                      .replace('; ', ', ')
+                                      .strip()) for kv in values])
   wdict = dict(words)
   LOG.append(wdict)
-  if len(LOG) > 100: LOG.pop(0)
+  while len(LOG) > LOG_LENGTH: LOG.pop(0)
   return (words, wdict)
  
-def LogSyslog(values):
-  words, wdict = LogValues(values)
+def LogSyslog(values, wdict=None, words=None):
+  if values:
+    words, wdict = LogValues(values)
   if 'err' in wdict:
     syslog.syslog(syslog.LOG_ERR, '; '.join(['='.join(x) for x in words]))
   elif 'debug' in wdict:
@@ -611,17 +715,26 @@ def LogSyslog(values):
   else:
     syslog.syslog(syslog.LOG_INFO, '; '.join(['='.join(x) for x in words]))
 
-def LogStdout(values):
-  words, wdict = LogValues(values)
-  print '; '.join(['='.join(x) for x in words])
+LogFile = sys.stdout
+def LogToFile(values, wdict=None, words=None):
+  if values:
+    words, wdict = LogValues(values)
+  LogFile.write('; '.join(['='.join(x) for x in words]))
+  LogFile.write('\n')
 
-Log = LogStdout
+def LogToMemory(values, wdict=None, words=None):
+  if values: LogValues(values)
+
+def FlushLogMemory():
+  for l in LOG:
+    Log(None, wdict=l, words=[(w, l[w]) for w in l])
+
+Log = LogToMemory
 
 def LogError(msg, parms=None):
   emsg = [('err', msg)]
   if parms: emsg.extend(parms)
   Log(emsg)
-  #time.sleep(0.1)
 
   global gYamon
   gYamon.vadd('errors', 1, wrap=1000000)
@@ -630,7 +743,6 @@ def LogDebug(msg, parms=None):
   emsg = [('debug', msg)]
   if parms: emsg.extend(parms)
   Log(emsg)
-  #time.sleep(0.1)
 
 
 # FIXME: This could easily be a pool of threads to let us handle more
@@ -644,9 +756,9 @@ class AuthThread(threading.Thread):
     self.jobs = []
     self.conns = conns
 
-  def check(self, requests, callback):
+  def check(self, requests, conn, callback):
     self.qc.acquire()
-    self.jobs.append((requests, callback))
+    self.jobs.append((requests, conn, callback))
     self.qc.notify()
     self.qc.release()
 
@@ -660,30 +772,52 @@ class AuthThread(threading.Thread):
     self.keep_running = True
     self.qc.acquire()
     while self.keep_running:
+      now = int(time.time())
       if self.jobs:
-        (requests, callback) = self.jobs.pop(0)
+        (requests, conn, callback) = self.jobs.pop(0)
         self.qc.release()
 
+        quotas = []
         results = []
-        session = ''
+        session = '%x:%s:' % (now, globalSecret())
         for (proto, domain, srand, token, sign, prefix) in requests:
           what = '%s:%s:%s' % (proto, domain, srand)
           session += what
           if not token or not sign:
+            # Send a challenge. Our challenges are time-stamped, so we can
+            # put stict bounds on possible replay attacks (20 minutes atm).
             results.append(('%s-SignThis' % prefix,
-                            '%s:%s' % (what, signToken(payload=what))))
-          elif not self.conns.config.GetDomainQuota(proto, domain, srand, token, sign):
-            results.append(('%s-Invalid' % prefix, what))
-          elif self.conns.Tunnel(proto, domain):
-            # FIXME: Allow multiple backends!
-            results.append(('%s-Duplicate' % prefix, what))
+                            '%s:%s' % (what, signToken(payload=what,
+                                                       timestamp=now))))
           else:
-            results.append(('%s-OK' % prefix, what))
+            # This is a bit lame, but we only check the token if the quota
+            # for this connection has never been verified.
+            quota = self.conns.config.GetDomainQuota(proto, domain, srand,
+                                                     token, sign,
+                                                   check_token=(conn.quota is None))
+            quotas.append(quota)
+            if not quota:
+              results.append(('%s-Invalid' % prefix, what))
+            elif self.conns.Tunnel(proto, domain):
+              # FIXME: Allow multiple backends?
+              results.append(('%s-Duplicate' % prefix, what))
+            else:
+              results.append(('%s-OK' % prefix, what))
 
         results.append(('%s-SessionID' % prefix,
-                        '%x:%s' % (time.time(), sha1hex(session))))
-        callback(results) 
+                        '%x:%s' % (now, sha1hex(session))))
 
+        if quotas:
+          nz_quotas = [q for q in quotas if q and q > 0]
+          if nz_quotas:
+            quota = min(nz_quotas)
+            if quota is not None:
+              conn.quota = [quota, requests[quotas.index(quota)], time.time()]
+              results.append(('%s-Quota' % prefix, quota))
+          elif requests:
+            conn.quota = [0, requests[0], time.time()]
+
+        callback(results)
         self.qc.acquire()
       else:
         self.qc.wait()
@@ -767,7 +901,7 @@ class UiRequestHandler(SimpleXMLRPCRequestHandler):
                      ' <span class=backend>%s</span>,'
                      ' <span class=bytes>%s in, %s out</span>)'
                      '</li>\n') % (tinfo,
-                                   tunnel.server_name.split(':')[0],
+                                   tunnel.server_info[tunnel.S_NAME].split(':')[0],
                                    binfo,
                                    fmt_size(tunnel.all_in + tunnel.read_bytes),
                                    fmt_size(tunnel.all_out + tunnel.wrote_bytes))) 
@@ -1091,6 +1225,9 @@ class Selectable(object):
     self.created = self.bytes_logged = time.time()
     self.dead = False
 
+    # Quota-related stuff
+    self.quota = None
+
     # Read-related variables
     self.maxread = maxread
     self.read_bytes = self.all_in = 0
@@ -1319,10 +1456,10 @@ class Selectable(object):
     else:
       if not self.peeking:
         self.read_bytes += len(data)
-        if self.read_bytes > 1024000: self.LogTraffic()
+        if self.read_bytes > LOG_THRESHOLD: self.LogTraffic()
       return self.ProcessData(data)
 
-  def Throttle(self, max_speed=None, remote=False):
+  def Throttle(self, max_speed=None, remote=False, delay=0.2):
     if max_speed:
       self.throttle_until = time.time()
       flooded = self.read_bytes + self.all_in
@@ -1332,7 +1469,6 @@ class Selectable(object):
     else:
       if self.throttle_until < time.time(): self.throttle_until = time.time()
       flooded = '?'
-      delay = 0.2
 
     self.throttle_until += delay
     self.LogDebug('Throttled until %x (flooded=%s, bps=%s, remote=%s)' % (
@@ -1384,7 +1520,7 @@ class Selectable(object):
 
     self.write_blocked = sending[sent_bytes:]
     buffered_bytes += len(self.write_blocked)
-    if self.wrote_bytes >= 512*1024: self.LogTraffic()
+    if self.wrote_bytes >= LOG_THRESHOLD: self.LogTraffic()
 
     if self.write_eof and not self.write_blocked: self.ProcessEofWrite()
     return True
@@ -1462,10 +1598,6 @@ class Connections(object):
       if ip in self.ip_tracker[tick]: domain = self.ip_tracker[tick][ip][1]
     return domain
 
-  def IpTracking(self):
-    print '%s' % self.ip_tracker
-    return self.ip_tracker
-
   def Remove(self, conn):
     if conn.alt_id and conn.alt_id in self.conns_by_id:
       del self.conns_by_id[conn.alt_id]
@@ -1511,7 +1643,7 @@ class Connections(object):
     servers = {}
     for tid in self.tunnels:
       for tunnel in self.tunnels[tid]:
-        server = tunnel.server_name
+        server = tunnel.server_info[tunnel.S_NAME]
         if server is not None:
           servers[server] = 1
     return servers.keys() 
@@ -1768,6 +1900,11 @@ class ChunkParser(Selectable):
 class Tunnel(ChunkParser):
   """A Selectable representing a PageKite tunnel."""
   
+  S_NAME = 0
+  S_PORTS = 1
+  S_RAW_PORTS = 2
+  S_PROTOS = 3
+
   def __init__(self, conns):
     ChunkParser.__init__(self)
 
@@ -1776,7 +1913,7 @@ class Tunnel(ChunkParser):
     # read here.
     self.maxread *= 2
 
-    self.server_name = 'x.x.x.x:x'
+    self.server_info = ['x.x.x.x:x', [], [], []]
     self.conns = conns
     self.users = {}
     self.zhistory = {}
@@ -1787,7 +1924,7 @@ class Tunnel(ChunkParser):
 
   def __html__(self):
     return ('<b>Server name</b>: %s<br>'
-            '%s') % (self.server_name, ChunkParser.__html__(self))
+            '%s') % (self.server_info[self.S_NAME], ChunkParser.__html__(self))
 
   def _FrontEnd(conn, body, conns):
     """This is what the front-end does when a back-end requests a new tunnel."""
@@ -1800,10 +1937,10 @@ class Tunnel(ChunkParser):
 
         for replace in conn.parser.Header(prefix+'-Replace'):
           if replace in self.conns.conns_by_id:
-            conn = self.conns.conns_by_id[replace]
-            self.LogDebug('Disconnecting old tunnel: %s' % conn)
-            self.conns.Remove(conn)
-            conn.Cleanup()
+            repl = self.conns.conns_by_id[replace]
+            self.LogDebug('Disconnecting old tunnel: %s' % repl)
+            self.conns.Remove(repl)
+            repl.Cleanup()
 
         for bs in conn.parser.Header(prefix):
           # X-Beanstalk: proto:my.domain.com:token:signature
@@ -1821,21 +1958,56 @@ class Tunnel(ChunkParser):
 
     self.CountAs('backends_live')
     self.SetConn(conn)
-    conns.auth.check(requests, lambda r: self.AuthCallback(conn, r))
+    conns.auth.check(requests, conn, lambda r: self.AuthCallback(conn, r))
 
     return self
+
+  def RecheckQuota(self, conns, when=None):
+    if when is None: when = time.time()
+    if self.quota and self.quota[1] and (self.quota[2] < when-900):
+      self.quota[2] = when
+      LogDebug('Rechecking: %s' % (self.quota, ))
+      conns.auth.check([self.quota[1]], self,
+                       lambda r: self.QuotaCallback(conns, r))
+
+  def QuotaCallback(self, conns, results):
+    # Report new values to the back-end...
+    if self.quota: self.SendQuota()
+
+    for r in results:
+      if r[0] in ('X-PageKite-OK', 'X-PageKite-Duplicate'):
+        return self
+
+    self.LogDebug('Ran out of quota? %s' % (results, ))
+    return self
+
+    self.LogError('Ran out of quota or account deleted, closing tunnel.')
+    conns.Remove(self)
+    self.Cleanup()
+    return None
 
   def AuthCallback(self, conn, results):
     
     output = [HTTP_ResponseHeader(200, 'OK'),
               HTTP_Header('Content-Transfer-Encoding', 'chunked'),
-              HTTP_Header('X-PageKite-Features', 'ZChunks')]
+              HTTP_Header('X-PageKite-Features', 'ZChunks'),
+              HTTP_Header('X-PageKite-Protos', ', '.join(['%s' % p
+                            for p in self.conns.config.server_protos])),
+              HTTP_Header('X-PageKite-Ports', ', '.join(
+                            ['%s' % self.conns.config.server_portalias.get(p, p)
+                             for p in self.conns.config.server_ports]))]
+
+    if self.conns.config.server_raw_ports:
+      output.append(
+        HTTP_Header('X-PageKite-Raw-Ports',
+                    ', '.join(['%s' % p for p
+                               in self.conns.config.server_raw_ports])))
+
     ok = {}
     for r in results:
-      output.append('%s: %s\r\n' % r)
       if r[0] in ('X-PageKite-OK', 'X-Beanstalk-OK'): ok[r[1]] = 1
-      if r[0] in ('X-PageKite-SessionID', 'X-Beanstalk-SessionID'):
-        self.alt_id = r[1]
+      if r[0] == 'X-PageKite-SessionID': self.alt_id = r[1]
+      output.append('%s: %s\r\n' % r)
 
     output.append(HTTP_StartBody())
     if not self.Send(output):
@@ -1849,6 +2021,9 @@ class Tunnel(ChunkParser):
         proto, domain, srand = backend.split(':')
         self.Log([('BE', 'Live'), ('proto', proto), ('domain', domain)])
         self.conns.Tunnel(proto, domain, self)
+      if conn.quota:
+        self.quota = conn.quota
+        self.Log([('BE', 'Live'), ('quota', self.quota[0])])
       self.conns.Add(self, alt_id=self.alt_id) 
       return self
     else:
@@ -1893,8 +2068,9 @@ class Tunnel(ChunkParser):
       self.fd.connect((server, 443))
 
     if self.conns.config.fe_certname:
-      # We can't set the SNI directly from Python, so we use CONNECT instead.
-      if (not self.Send(['CONNECT %s:443 HTTP/1.0\r\n\r\n' % (self.conns.config.fe_certname[0])])
+      # We can't set the SNI directly from Python, so we use CONNECT instead
+      commonName = self.conns.config.fe_certname[0].split('/')[0]
+      if (not self.Send(['CONNECT %s:443 HTTP/1.0\r\n\r\n' % commonName])
           or not self.Flush(wait=True)):
         return None, None
 
@@ -1918,8 +2094,12 @@ class Tunnel(ChunkParser):
         LogError('SSL handshake failed: probably a bad cert (%s)' % e)
         return None, None
 
-    if (not self.Send(HTTP_PageKiteRequest(server, conns.config.backends, tokens,
-                                     nozchunks=conns.config.disable_zchunks))
+    replace_sessionid = self.conns.config.servers_sessionids.get(server, None)
+    if (not self.Send(HTTP_PageKiteRequest(server,
+                                         conns.config.backends,
+                                       tokens,
+                                     nozchunks=conns.config.disable_zchunks,
+                                    replace=replace_sessionid))
         or not self.Flush(wait=True)):
       return None, None
 
@@ -1936,15 +2116,23 @@ class Tunnel(ChunkParser):
     self = Tunnel(conns)
     self.backends = backends
     self.require_all = require_all
-    self.server_name = server
+    self.server_info[self.S_NAME] = server
     try:
       begin = time.time()
       data, parse = self._Connect(server, conns)
       if data and parse:
 
+        # Collect info about front-end capabilities, for interactive config
+        for portlist in parse.Header('X-PageKite-Ports'):
+          self.server_info[self.S_PORTS].extend(portlist.split(', '))
+        for portlist in parse.Header('X-PageKite-Raw-Ports'):
+          self.server_info[self.S_RAW_PORTS].extend(portlist.split(', '))
+        for protolist in parse.Header('X-PageKite-Protos'):
+          self.server_info[self.S_PROTOS].extend(protolist.split(', '))
+
         for sessionid in parse.Header('X-PageKite-SessionID'):
           self.alt_id = sessionid
-#         LogDebug('Got session ID: %s' % sessionid)
+          conns.config.servers_sessionids[server] = sessionid
 
         tryagain = False
         tokens = {}
@@ -1964,19 +2152,29 @@ class Tunnel(ChunkParser):
 
           for request in parse.Header('X-PageKite-OK'):
             proto, domain, srand = request.split(':')
-            self.Log([('FE', self.server_name), ('proto', proto), ('domain', domain)])
+            self.Log([('FE', self.server_info[self.S_NAME]),
+                      ('proto', proto),
+                      ('domain', domain)])
             conns.Tunnel(proto, domain, self)
 
           for request in parse.Header('X-PageKite-Invalid'):
             proto, domain, srand = request.split(':')
-            self.Log([('FE', self.server_name), ('err', 'Rejected'), ('proto', proto), ('domain', domain)])
+            self.Log([('FE', self.server_info[self.S_NAME]),
+                      ('err', 'Rejected'),
+                      ('proto', proto),
+                      ('domain', domain)])
 
           for request in parse.Header('X-PageKite-Duplicate'):
             proto, domain, srand = request.split(':')
-            self.Log([('FE', self.server_name),
+            self.Log([('FE', self.server_info[self.S_NAME]),
                       ('err', 'Duplicate'),
                       ('proto', proto),
                       ('domain', domain)])
+
+          for quota in parse.Header('X-PageKite-Quota'):
+            self.quota = [int(quota), None, None]
+            self.Log([('FE', self.server_info[self.S_NAME]),
+                      ('quota', quota)])
 
         self.rtt = (time.time() - begin)
     
@@ -2041,15 +2239,19 @@ class Tunnel(ChunkParser):
     ChunkParser.Cleanup(self)
 
   def ResetRemoteZChunks(self):
-    return self.SendChunked('NOOP: 1\nZRST: 1\r\n\r\n!', compress=False)
+    return self.SendChunked('NOOP: 1\r\nZRST: 1\r\n\r\n!', compress=False)
 
   def SendPing(self):
     self.last_ping = int(time.time())
-    self.Log([('ping', self.server_name)])
-    return self.SendChunked('NOOP: 1\nPING: 1\r\n\r\n!', compress=False)
+    self.LogDebug("Ping", [('host', self.server_info[self.S_NAME])])
+    return self.SendChunked('NOOP: 1\r\nPING: 1\r\n\r\n!', compress=False)
 
   def SendPong(self):
     return self.SendChunked('NOOP: 1\r\n\r\n!', compress=False)
+
+  def SendQuota(self):
+    return self.SendChunked('NOOP: 1\r\nQuota: %s\r\n\r\n!' % self.quota[0],
+                            compress=False)
 
   def SendThrottle(self, sid, write_speed):
     return self.SendChunked('NOOP: 1\r\nSID: %s\r\nSPD: %d\r\n\r\n!' % (
@@ -2094,10 +2296,19 @@ class Tunnel(ChunkParser):
       return False
 
     self.last_activity = time.time()
-    if parse.Header('PING'): return self.SendPong()
-    if parse.Header('ZRST') and not self.ResetZChunks(): return False
-    if parse.Header('SPD') and not self.Throttle(parse): return False
-    if parse.Header('NOOP'): return True
+    try:
+      if parse.Header('Quota'):
+        if self.quota:
+          self.quota[0] = int(parse.Header('Quota')[0])
+        else:
+          self.quota = [int(parse.Header('Quota')[0]), None, None]
+      if parse.Header('PING'): return self.SendPong()
+      if parse.Header('ZRST') and not self.ResetZChunks(): return False
+      if parse.Header('SPD') and not self.Throttle(parse): return False
+      if parse.Header('NOOP'): return True
+    except Exception, e:
+      LogError('Tunnel::ProcessChunk: Corrupt chunk: %s' % e)
+      return False
 
     conn = None
     sid = None
@@ -2179,7 +2390,7 @@ class LoopbackTunnel(Tunnel):
 
     self.backends = backends
     self.require_all = True
-    self.server_name = LOOPBACK[which]
+    self.server_info[self.S_NAME] = LOOPBACK[which]
     self.other_end = None
 
     if which == 'FE':
@@ -2187,7 +2398,9 @@ class LoopbackTunnel(Tunnel):
         if backends[d][BE_BACKEND]:
           proto, domain = d.split(':')
           self.conns.Tunnel(proto, domain, self)
-          self.Log([('FE', self.server_name), ('proto', proto), ('domain', domain)])
+          self.Log([('FE', self.server_info[self.S_NAME]),
+                    ('proto', proto),
+                    ('domain', domain)])
 
   def Cleanup(self):
     other = self.other_end
@@ -2351,7 +2564,10 @@ class UserConn(Selectable):
       if self.fd:
         if 'sock_shutdown' in dir(self.fd):
           # This is a pyOpenSSL socket, which has incompatible shutdown.
-          if direction == socket.SHUT_RD: self.fd.shutdown()
+          if direction == socket.SHUT_RD:
+            self.fd.shutdown()
+          else:
+            self.fd.sock_shutdown(direction)
         else:
           self.fd.shutdown(direction)
     except Exception, e:
@@ -2381,6 +2597,12 @@ class UserConn(Selectable):
     self.write_eof = True
     return self.ProcessEof()
 
+  def Send(self, data, try_flush=False, bail_out=False):
+    rv = Selectable.Send(self, data, try_flush=try_flush, bail_out=bail_out)
+    if self.write_eof and not self.write_blocked:
+      self.Shutdown(socket.SHUT_WR)
+    return rv
+
   def ProcessData(self, data):
     if not self.tunnel:
       self.LogError('No tunnel! %s' % self)
@@ -2391,7 +2613,8 @@ class UserConn(Selectable):
       return False
 
     # Back off if tunnel is stuffed.
-    if self.tunnel and len(self.tunnel.write_blocked) > 1024000: self.Throttle()
+    if self.tunnel and len(self.tunnel.write_blocked) > 1024000:
+      self.Throttle(delay=(len(self.tunnel.write_blocked)-204800)/max(50000, self.tunnel.write_speed))
 
     if self.read_eof: return self.ProcessEofRead()
     return True
@@ -2646,17 +2869,23 @@ class TunnelManager(threading.Thread):
     self.pkite = pkite
     self.conns = conns
 
+  def CheckTunnelQuotas(self, now):
+    for tid in self.conns.tunnels:
+      for tunnel in self.conns.tunnels[tid]:
+        tunnel.RecheckQuota(self.conns, when=now)
+
   def PingTunnels(self, now):
     dead = {}
     for tid in self.conns.tunnels:
       for tunnel in self.conns.tunnels[tid]:
-        if tunnel.last_activity < now-45:
+        grace = max(40, len(tunnel.write_blocked)/tunnel.write_speed)
+        if tunnel.last_activity < tunnel.last_ping-(5+grace):
           dead['%s' % tunnel] = tunnel
         elif tunnel.last_activity < now-30 and tunnel.last_ping < now-2:
           tunnel.SendPing()
 
     for tunnel in dead.values():
-      Log([('dead', tunnel.server_name)])
+      Log([('dead', tunnel.server_info[tunnel.S_NAME])])
       self.conns.Remove(tunnel)
       tunnel.Cleanup()
 
@@ -2677,7 +2906,8 @@ class TunnelManager(threading.Thread):
 
         # If all connected, make sure tunnels are really alive.
         if self.pkite.isfrontend:
-          pass # FIXME: Front-ends should close dead back-end tunnels.
+          self.CheckTunnelQuotas(time.time())
+          # FIXME: Front-ends should close dead back-end tunnels.
         else:
           self.PingTunnels(time.time())
 
@@ -2714,6 +2944,7 @@ class PageKite(object):
     self.ui_password = None
     self.ui_pemfile = None
     self.disable_zchunks = False
+    self.enable_sslzlib = False
     self.buffer_max = 1024 
     self.error_url = None
 
@@ -2729,6 +2960,7 @@ class PageKite(object):
     self.servers_new_only = False
     self.servers_no_ping = False
     self.servers_preferred = []
+    self.servers_sessionids = {}
 
     self.dyndns = None
     self.last_updates = []
@@ -2740,6 +2972,7 @@ class PageKite(object):
     self.crash_report_url = '%scgi-bin/crashes.pl' % WWWHOME
     self.rcfile_recursion = 0
     self.rcfiles_loaded = []
+    self.savefile = None
 
     # Searching for our configuration file!  We prefer the documented
     # 'standard' locations, but if nothing is found there and something local
@@ -2748,9 +2981,11 @@ class PageKite(object):
       if os.getenv('USERPROFILE'):
         # Windows
         self.rcfile = os.path.join(os.getenv('USERPROFILE'), 'pagekite.cfg')
+        self.devnull = 'nul'
       else:
         # Everything else
         self.rcfile = os.path.join(os.getenv('HOME'), '.pagekite.rc')
+        self.devnull = '/dev/null'
 
     except Exception, e:
       # The above stuff may fail in some cases, e.g. on Android in SL4A.
@@ -2889,7 +3124,9 @@ class PageKite(object):
 
   def GetBackendData(self, proto, domain, field, recurse=True):
     backend = '%s:%s' % (proto.lower(), domain.lower())
-    if backend in self.backends: return self.backends[backend][field]  
+    if backend in self.backends:
+      if BE_STATUS_DISABLED != self.backends[backend][BE_STATUS]:
+        return self.backends[backend][field]  
 
     if recurse:
       dparts = domain.split('.')
@@ -2906,23 +3143,27 @@ class PageKite(object):
     return server
 
   def IsSignatureValid(self, sign, secret, proto, domain, srand, token):
-    return sign == signToken(token=sign, secret=secret,
-                           payload='%s:%s:%s:%s' % (proto, domain, srand, token))
+    return checkSignature(sign=sign, secret=secret,
+                          payload='%s:%s:%s:%s' % (proto, domain, srand, token))
 
   def LookupDomainQuota(self, lookup):
+    if not lookup.endswith('.'): lookup += '.'
+    #LogDebug('Lookup: %s' % lookup)
     ip = socket.gethostbyname(lookup)
 
-    # High bit not set, then access is granted and the "ip" is a quota.
+    # If not an authentication error, quota should be encoded as an IP.
     if not ip.startswith(AUTH_ERRORS):
-      return 1024 # FIXME: Decode and return quota.
+      o = [int(x) for x in ip.split('.')]
+      return (((o[0]*256 + o[1])*256 + o[2])*256 + o[3])
   
     # Errors on real errors are final.
-    if ip != AUTH_ERR_USER_UNKNOWN: return None
+    if not ip.endswith(AUTH_ERR_USER_UNKNOWN): return None
 
     # User unknown, fall through to local test.
     return -1 
 
-  def GetDomainQuota(self, protoport, domain, srand, token, sign, recurse=True):
+  def GetDomainQuota(self, protoport, domain, srand, token, sign,
+                     recurse=True, check_token=True):
     if '-' in protoport:
       proto, port = protoport.split('-')
       try:
@@ -2948,7 +3189,7 @@ class PageKite(object):
       return None
 
     data = '%s:%s:%s' % (protoport, domain, srand)
-    if not token or token == signToken(token=token, payload=data):
+    if (not token) or (not check_token) or checkSignature(sign=token, payload=data):
       if self.auth_domain:
         lookup = '.'.join([srand, token, sign, protoport, domain, self.auth_domain])
         try:
@@ -2962,12 +3203,12 @@ class PageKite(object):
       if not secret: secret = self.GetBackendData(proto, domain, BE_SECRET)
       if secret:
         if self.IsSignatureValid(sign, secret, protoport, domain, srand, token):
-          return 1024
+          return -1
         else:
-          LogError('Invalid signature for: %s (%s:%s)' % (proto, protoport, domain))
+          LogError('Invalid signature for: %s (%s)' % (domain, protoport))
           return None
 
-    LogError('No authentication found for: %s (%s:%s)' % (proto, protoport, domain))
+    LogError('No authentication found for: %s (%s)' % (domain, protoport))
     return None
 
   def ConfigureFromFile(self, filename=None):
@@ -3000,6 +3241,10 @@ class PageKite(object):
 
     for opt, arg in opts:
       if opt in ('-o', '--optfile'): self.ConfigureFromFile(arg) 
+      elif opt in ('-S', '--savefile'):
+        if self.savefile: raise ConfigError('Multiple save-files!')
+        self.ConfigureFromFile(arg)
+        self.savefile = arg
 
       elif opt in ('-I', '--pidfile'): self.pidfile = arg
       elif opt in ('-L', '--logfile'): self.logfile = arg
@@ -3060,7 +3305,10 @@ class PageKite(object):
         self.server_raw_ports = [(x == VIRTUAL_PN and x or int(x)) for x in arg.split(',')]
       elif opt in ('-h', '--host'): self.server_host = arg
       elif opt in ('-A', '--authdomain'): self.auth_domain = arg
-      elif opt in ('-f', '--isfrontend'): self.isfrontend = True
+      elif opt in ('-f', '--isfrontend'):
+        self.isfrontend = True
+        global LOG_THRESHOLD
+        LOG_THRESHOLD *= 4
 
       elif opt in ('-a', '--all'): self.require_all = True
       elif opt in ('-N', '--new'): self.servers_new_only = True
@@ -3100,12 +3348,14 @@ class PageKite(object):
             proto, port = proto.split('-')
             bid = '%s-%d:%s' % (proto.lower(), int(port), domain.lower())
           else:
+            port = ''
             bid = '%s:%s' % (proto.lower(), domain.lower())
 
           backend = '%s:%s' % (bhost.lower(), bport)
           if bid in self.backends:
             raise ConfigError("Same backend/domain defined twice: %s" % bid)
-          self.backends[bid] = (proto.lower(), domain.lower(), backend, secret)
+          self.backends[bid] = (proto.lower(), port, domain.lower(),
+                                backend, secret, BE_STATUS_UNKNOWN)
 
       elif opt == '--domain':
         protos, domain, secret = arg.split(':')
@@ -3114,16 +3364,19 @@ class PageKite(object):
           bid = '%s:%s' % (proto, domain)
           if bid in self.backends:
             raise ConfigError("Same backend/domain defined twice: %s" % bid)
-          self.backends[bid] = (proto, domain, None, secret)
+          self.backends[bid] = (proto, None, domain, None, secret,
+                                BE_STATUS_UNKNOWN)
 
       elif opt == '--noprobes': self.no_probes = True
       elif opt == '--nofrontend': self.isfrontend = False
       elif opt == '--nodaemonize': self.daemonize = False
       elif opt == '--noall': self.require_all = False
       elif opt == '--nozchunks': self.disable_zchunks = True
+      elif opt == '--sslzlib': self.enable_sslzlib = True
       elif opt == '--buffers': self.buffer_max = int(arg)
       elif opt == '--nocrashreport': self.crash_report_url = None
       elif opt == '--clean': pass
+      elif opt == '--nopyopenssl': pass
       elif opt == '--noloop': self.main_loop = False
 
       elif opt == '--defaults':
@@ -3269,7 +3522,7 @@ class PageKite(object):
           ips = []
           bips = []
           for tunnel in conns.tunnels[bid]:
-            ip = tunnel.server_name.split(':')[0]
+            ip = tunnel.server_info[tunnel.S_NAME].split(':')[0]
             if not ip == LOOPBACK_HN:
               if not self.servers_preferred or ip in self.servers_preferred:
                 ips.append(ip)
@@ -3316,30 +3569,32 @@ class PageKite(object):
 
     return failures
 
-  def LogTo(self, filename, close_all=True):
+  def LogTo(self, filename, close_all=True, dont_close=[]):
+    global Log
+
+    # Try to open the file before we close everything, so errors don't get
+    # squelched.
+    try:
+      open(filename, "a").close()
+    except IOError, e:
+      raise ConfigError('%s' % e)
+
+    if filename == 'memory':
+      Log = LogToMemory
+      filename = self.devnull
+
     if filename == 'syslog':
-      global Log
       Log = LogSyslog
-      filename = '/dev/null'
+      filename = self.devnull
       syslog.openlog((sys.argv[0] or 'pagekite.py').split('/')[-1],
                      syslog.LOG_PID, syslog.LOG_DAEMON)
 
-    if close_all:
-      for fd in range(0, 1024): # Not MAXFD, but should be enough.
-        try:
-          os.close(fd)
-        except Exception: # ERROR, fd wasn't open to begin with (ignored)
-          pass  
-
-      os.open(filename, os.O_RDWR | os.O_APPEND | os.O_CREAT)
-      os.dup2(0, 1)
-      os.dup2(0, 2)
-    else:
-      fd = os.open(filename, os.O_RDWR | os.O_APPEND | os.O_CREAT)
-      os.dup2(fd, 0)
-      os.dup2(fd, 1)
-      os.dup2(fd, 2)
-      os.close(fd)
+    if filename != 'stdio':
+      global LogFile
+      LogFile = fd = open(filename, "a", 0)
+      os.dup2(fd.fileno(), sys.stdin.fileno())
+      os.dup2(fd.fileno(), sys.stdout.fileno())
+      os.dup2(fd.fileno(), sys.stderr.fileno())
 
   def Daemonize(self):
     # Fork once...
@@ -3407,8 +3662,6 @@ class PageKite(object):
 
       last_loop = now
 
-    ## NOT REACHED ##
-
   def Loop(self):
     self.conns.start()
     if self.ui_httpd: self.ui_httpd.start()
@@ -3424,26 +3677,14 @@ class PageKite(object):
 
   def Start(self):
     conns = self.conns = Connections(self)
-
-    # Create log-file
-    if self.logfile:
-      self.LogTo(self.logfile)
-      try:
-        import signal
-        def reopen(x,y):
-          self.LogTo(self.logfile, close_all=False)
-          LogDebug('SIGHUP received, reopening: %s' % self.logfile)
-        signal.signal(signal.SIGHUP, reopen)
-      except ImportError:
-        LogError('Warning: importing signal failed, logrotate will not work.')
+    global Log
 
     # Log that we've started up
     config_report = [('started', sys.argv[0]), ('version', APPVER),
-                     ('argv', ' '.join(sys.argv[1:])), 
+                     ('argv', ' '.join(sys.argv[1:])),
                      ('ca_certs', self.ca_certs)]
     for optf in self.rcfiles_loaded: config_report.append(('optfile', optf))
     Log(config_report)
-    LogDebug('Harmless errnos: %s' % (Selectable.HARMLESS_ERRNOS, ))
 
     try:
       # Set up our listeners if we are a server.
@@ -3465,7 +3706,29 @@ class PageKite(object):
       self.tunnel_manager = TunnelManager(self, conns)
 
     except Exception, e:
+      Log = LogToFile
+      FlushLogMemory()
       raise ConfigError(e)
+
+    # Create log-file
+    Log = LogToFile
+    if self.logfile:
+      keep_open = [s.fd.fileno() for s in conns.conns]
+      if self.ui_httpd: keep_open.append(self.ui_httpd.httpd.socket.fileno())
+      self.LogTo(self.logfile, dont_close=keep_open)
+      try:
+        import signal
+        def reopen(x,y):
+          self.LogTo(self.logfile, close_all=False)
+          LogDebug('SIGHUP received, reopening: %s' % self.logfile)
+        signal.signal(signal.SIGHUP, reopen)
+      except Exception:
+        LogError('Warning: configure signal handler failed, logrotate will not work.')
+    FlushLogMemory()
+
+    # Disable compression in OpenSSL
+    if not self.enable_sslzlib:
+      DisableSSLCompression()
 
     # Daemonize!
     if self.daemonize:
@@ -3495,9 +3758,11 @@ class PageKite(object):
     self.Loop()
 
     Log([('stopping', 'pagekite.py')])
-    if self.conns and self.conns.auth: self.conns.auth.quit()
     if self.ui_httpd: self.ui_httpd.quit()
     if self.tunnel_manager: self.tunnel_manager.quit()
+    if self.conns:
+      if self.conns.auth: self.conns.auth.quit()
+      for conn in self.conns.conns: conn.Cleanup()
 
 
 ##[ Main ]#####################################################################
@@ -3520,10 +3785,11 @@ def Main(pagekite, configure):
         pk.FallDown(msg)
 
       except KeyboardInterrupt, msg:
-        pk.FallDown(None, help=False)
+        pk.FallDown(None, help=False, noexit=True)
+        return
 
     except SystemExit:
-      sys.exit(1)
+      sys.exit(0)
 
     except Exception, msg:
       traceback.print_exc(file=sys.stderr)
