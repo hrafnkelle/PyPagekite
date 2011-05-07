@@ -1,3 +1,9 @@
+pagekite (0.3.19) lucid; urgency=low
+
+  * Merged v0.3.19 from upstream
+
+ -- Hrafnkell Eiriksson <he@klaki.net>  Sat, 07 May 2011 11:43:28 +0000
+
 pagekite (0.3.17-1) lucid; urgency=low
 
   * Merged 0.3.17 
