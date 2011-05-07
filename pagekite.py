@@ -101,7 +101,7 @@
 ###############################################################################
 #
 PROTOVER = '0.8'
-APPVER = '0.3.17+github'
+APPVER = '0.3.19'
 AUTHOR = 'Bjarni Runar Einarsson, http://bre.klaki.net/'
 WWWHOME = 'http://pagekite.net/'
 DOC = """\
@@ -326,7 +326,7 @@ try:
   def SSL_Connect(ctx, sock,
                   server_side=False, accepted=False, connected=False,
                   verify_names=None):
-    LogDebug('TLS is provided by pyOpenSSL')
+    LogInfo('TLS is provided by pyOpenSSL')
     if verify_names:
       def vcb(conn, x509, errno, depth, rc):
         # FIXME: No ALT names, no wildcards ...
@@ -403,7 +403,7 @@ except ImportError:
     def SSL_Connect(ctx, sock,
                     server_side=False, accepted=False, connected=False,
                     verify_names=None):
-      LogDebug('TLS is provided by native Python ssl')
+      LogInfo('TLS is provided by native Python ssl')
       reqs = (verify_names and ssl.CERT_REQUIRED or ssl.CERT_NONE)
       fd = ssl.wrap_socket(sock, keyfile=ctx.privatekey_file, 
                                  certfile=ctx.certchain_file,
@@ -519,7 +519,7 @@ def globalSecret():
         gSecret = newSecret
         LogDebug('Seeded signatures using os.urandom(), hooray!')
       except:
-        LogDebug('WARNING: Seeding signatures with time.time() and random.randint()')
+        LogInfo('WARNING: Seeding signatures with time.time() and random.randint()')
 
   return gSecret
 
@@ -744,6 +744,11 @@ def LogDebug(msg, parms=None):
   if parms: emsg.extend(parms)
   Log(emsg)
 
+def LogInfo(msg, parms=None):
+  emsg = [('info', msg)]
+  if parms: emsg.extend(parms)
+  Log(emsg)
+
 
 # FIXME: This could easily be a pool of threads to let us handle more
 #        than one incoming request at a time.
@@ -780,7 +785,13 @@ class AuthThread(threading.Thread):
         quotas = []
         results = []
         session = '%x:%s:' % (now, globalSecret())
-        for (proto, domain, srand, token, sign, prefix) in requests:
+        for request in requests:
+          try:
+            proto, domain, srand, token, sign, prefix = request
+          except:
+            LogError('Invalid request: %s' % (request, ))
+            continue
+
           what = '%s:%s:%s' % (proto, domain, srand)
           session += what
           if not token or not sign:
@@ -795,7 +806,6 @@ class AuthThread(threading.Thread):
             quota = self.conns.config.GetDomainQuota(proto, domain, srand,
                                                      token, sign,
                                                    check_token=(conn.quota is None))
-            quotas.append(quota)
             if not quota:
               results.append(('%s-Invalid' % prefix, what))
             elif self.conns.Tunnel(proto, domain):
@@ -803,6 +813,7 @@ class AuthThread(threading.Thread):
               results.append(('%s-Duplicate' % prefix, what))
             else:
               results.append(('%s-OK' % prefix, what))
+              quotas.append(quota)
 
         results.append(('%s-SessionID' % prefix,
                         '%x:%s' % (now, sha1hex(session))))
@@ -815,7 +826,10 @@ class AuthThread(threading.Thread):
               conn.quota = [quota, requests[quotas.index(quota)], time.time()]
               results.append(('%s-Quota' % prefix, quota))
           elif requests:
-            conn.quota = [0, requests[0], time.time()]
+            if not conn.quota:
+              conn.quota = [None, requests[0], time.time()]
+            else:
+              conn.quota[2] = time.time()
 
         callback(results)
         self.qc.acquire()
@@ -1102,7 +1116,7 @@ class HttpUiThread(threading.Thread):
       except KeyboardInterrupt:
         self.serve = False
       except Exception, e:
-        LogDebug('HTTP UI caught exception: %s' % e)
+        LogInfo('HTTP UI caught exception: %s' % e)
     LogDebug('HttpUiThread: done')
     self.httpd.socket.close()
 
@@ -1140,7 +1154,7 @@ class HttpParser(object):
     self.version, self.code, self.message = line.split()
 
     if not self.version.upper() in HTTP_VERSIONS:
-      LogError('Invalid version: %s' % self.version)
+      LogDebug('Invalid version: %s' % self.version)
       return False
 
     self.state = self.IN_HEADERS
@@ -1150,11 +1164,11 @@ class HttpParser(object):
     self.method, self.path, self.version = line.split()
 
     if not self.method in HTTP_METHODS:
-      LogError('Invalid method: %s' % self.method)
+      LogDebug('Invalid method: %s' % self.method)
       return False
 
     if not self.version.upper() in HTTP_VERSIONS:
-      LogError('Invalid version: %s' % self.version)
+      LogDebug('Invalid version: %s' % self.version)
       return False
 
     self.state = self.IN_HEADERS
@@ -1191,7 +1205,7 @@ class HttpParser(object):
         return self.ParseBody(line)
 
     except ValueError, err:
-      LogError('Parse failed: %s, %s, %s' % (self.state, err, self.lines))
+      LogInfo('Parse failed: %s, %s, %s' % (self.state, err, self.lines))
 
     self.state = self.PARSE_FAILED
     return False
@@ -1350,6 +1364,11 @@ class Selectable(object):
     if self.log_id: values.append(('id', self.log_id))
     LogDebug(message, values)
 
+  def LogInfo(self, message, params=None):
+    values = params or []
+    if self.log_id: values.append(('id', self.log_id))
+    LogInfo(message, values)
+
   def LogTraffic(self, final=False):
     if self.wrote_bytes or self.read_bytes:
       now = time.time()
@@ -1393,6 +1412,8 @@ class Selectable(object):
   def ProcessEof(self):
     if self.read_eof and self.write_eof and not self.write_blocked:
       self.Cleanup()
+      return False
+    return True
 
   def ProcessEofRead(self):
     self.read_eof = True
@@ -1412,7 +1433,7 @@ class Selectable(object):
       try:
         discard += self.fd.recv(eat_bytes - len(discard))
       except socket.error, (errno, msg):
-        self.LogDebug('Error reading (%d/%d) socket: %s (errno=%s)' % (
+        self.LogInfo('Error reading (%d/%d) socket: %s (errno=%s)' % (
                        eat_bytes, self.peeked, msg, errno))
         time.sleep(0.1)
 
@@ -1422,7 +1443,6 @@ class Selectable(object):
 
   def ReadData(self, maxread=None):
     if self.read_eof:
-#     self.LogDebug("Read attempted after EOF!")
       return False
 
     try:
@@ -1447,7 +1467,7 @@ class Selectable(object):
       if errno in self.HARMLESS_ERRNOS:
         return True
       else:
-        self.LogError('Error sending: %s (errno=%s)' % (msg, errno))
+        self.LogInfo('Error reading socket: %s (errno=%s)' % (msg, errno))
         return False
 
     if data is None or data == '':
@@ -1471,7 +1491,7 @@ class Selectable(object):
       flooded = '?'
 
     self.throttle_until += delay
-    self.LogDebug('Throttled until %x (flooded=%s, bps=%s, remote=%s)' % (
+    self.LogInfo('Throttled until %x (flooded=%s, bps=%s, remote=%s)' % (
                     int(self.throttle_until), flooded, max_speed, remote))
     return True
 
@@ -1497,24 +1517,22 @@ class Selectable(object):
         self.write_retry = None
       except IOError, err:
         if err.errno not in self.HARMLESS_ERRNOS:
-          self.LogError('Error sending: %s' % err)
+          self.LogInfo('Error sending: %s' % err)
           self.ProcessEofWrite()
           return False
         else:
-#         self.LogDebug('Problem sending: %s' % err)
           self.write_retry = len(sending)
       except (SSL.WantWriteError, SSL.WantReadError), err:
         self.write_retry = len(sending)
       except socket.error, (errno, msg):
         if errno not in self.HARMLESS_ERRNOS:
-          self.LogError('Error sending: %s (errno=%s)' % (msg, errno))
+          self.LogInfo('Error sending: %s (errno=%s)' % (msg, errno))
           self.ProcessEofWrite()
           return False
         else:
-#         self.LogDebug('Problem sending: %s (errno=%s)' % (msg, errno))
           self.write_retry = len(sending)
       except (SSL.Error, SSL.ZeroReturnError, SSL.SysCallError), err:
-        self.LogDebug('Error sending (SSL): %s' % err)
+        self.LogInfo('Error sending (SSL): %s' % err)
         self.ProcessEofWrite()
         return False
 
@@ -1544,7 +1562,7 @@ class Selectable(object):
           zhistory[1] = len(zdata)
         return self.Send(['%xZ%x%s\r\n%s' % (len(sdata), len(zdata), rst, zdata)])
       except zlib.error:
-        LogDebug('Error compressing, resetting ZChunks.')
+        LogError('Error compressing, resetting ZChunks.')
         self.ResetZChunks()
 
     return self.Send(['%x%s\r\n%s' % (len(sdata), rst, sdata)])
@@ -1858,7 +1876,6 @@ class ChunkParser(Selectable):
         return False
 
       if self.want_bytes == 0:
-        LogDebug('ChunkParser::ProcessData: end of chunk')
         return False
 
     process = data[:self.want_bytes]
@@ -1938,7 +1955,7 @@ class Tunnel(ChunkParser):
         for replace in conn.parser.Header(prefix+'-Replace'):
           if replace in self.conns.conns_by_id:
             repl = self.conns.conns_by_id[replace]
-            self.LogDebug('Disconnecting old tunnel: %s' % repl)
+            self.LogInfo('Disconnecting old tunnel: %s' % repl)
             self.conns.Remove(repl)
             repl.Cleanup()
 
@@ -1948,12 +1965,12 @@ class Tunnel(ChunkParser):
           requests.append((proto.lower(), domain.lower(), srand, token, sign,
                            prefix))
       
-    except ValueError, err:
+    except Exception, err:
       self.LogError('Discarding connection: %s' % err)
       return None
 
     except socket.error, err:
-      self.LogError('Discarding connection: %s' % err)
+      self.LogInfo('Discarding connection: %s' % err)
       return None
 
     self.CountAs('backends_live')
@@ -1964,7 +1981,10 @@ class Tunnel(ChunkParser):
 
   def RecheckQuota(self, conns, when=None):
     if when is None: when = time.time()
-    if self.quota and self.quota[1] and (self.quota[2] < when-900):
+    if (self.quota and
+        self.quota[0] is not None and
+        self.quota[1] and
+        (self.quota[2] < when-900)):
       self.quota[2] = when
       LogDebug('Rechecking: %s' % (self.quota, ))
       conns.auth.check([self.quota[1]], self,
@@ -1972,7 +1992,7 @@ class Tunnel(ChunkParser):
 
   def QuotaCallback(self, conns, results):
     # Report new values to the back-end...
-    if self.quota: self.SendQuota()
+    if self.quota and (self.quota[0] >= 0): self.SendQuota()
 
     for r in results:
       if r[0] in ('X-PageKite-OK', 'X-PageKite-Duplicate'):
@@ -1980,8 +2000,9 @@ class Tunnel(ChunkParser):
 
     self.LogDebug('Ran out of quota? %s' % (results, ))
     return self
+    # FIXME: We should let this run...
 
-    self.LogError('Ran out of quota or account deleted, closing tunnel.')
+    self.LogInfo('Ran out of quota or account deleted, closing tunnel.')
     conns.Remove(self)
     self.Cleanup()
     return None
@@ -2011,7 +2032,7 @@ class Tunnel(ChunkParser):
 
     output.append(HTTP_StartBody())
     if not self.Send(output):
-      conn.LogError('No tunnels configured, closing connection.')
+      conn.LogDebug('No tunnels configured, closing connection.')
       self.Cleanup()
       return None
 
@@ -2027,7 +2048,7 @@ class Tunnel(ChunkParser):
       self.conns.Add(self, alt_id=self.alt_id) 
       return self
     else:
-      conn.LogError('No tunnels configured, closing connection.')
+      conn.LogDebug('No tunnels configured, closing connection.')
       self.Cleanup()
       return None
 
@@ -2178,7 +2199,12 @@ class Tunnel(ChunkParser):
 
         self.rtt = (time.time() - begin)
     
+
     except socket.error, e:
+      return None
+
+    except Exception, e:
+      self.LogError('Server response parsing failed: %s' % e)
       return None
 
     conns.Add(self)
@@ -2282,9 +2308,10 @@ class Tunnel(ChunkParser):
   def ProcessEofRead(self):
     self.conns.Remove(self)
     self.Cleanup()
+    return True
 
   def ProcessEofWrite(self):
-    self.ProcessEofRead()
+    return self.ProcessEofRead()
 
   def ProcessChunk(self, data):
     try:
@@ -2392,7 +2419,6 @@ class LoopbackTunnel(Tunnel):
     self.require_all = True
     self.server_info[self.S_NAME] = LOOPBACK[which]
     self.other_end = None
-
     if which == 'FE':
       for d in backends.keys():
         if backends[d][BE_BACKEND]:
@@ -2413,8 +2439,8 @@ class LoopbackTunnel(Tunnel):
     other.other_end = self
 
   def _Loop(conns, backends):
-    LoopbackTunnel(conns, 'FE', backends
-                   ).Linkup(LoopbackTunnel(conns, 'BE', backends))
+    return LoopbackTunnel(conns, 'FE', backends
+                          ).Linkup(LoopbackTunnel(conns, 'BE', backends))
 
   Loop = staticmethod(_Loop)
 
@@ -2453,7 +2479,7 @@ class UserConn(Selectable):
     self.conns = conns
     self.SetConn(conn)
 
-    if ':' in host: host, port = host.split(':')
+    if ':' in host: host, port = host.split(':', 1)
     self.proto = proto
     self.host = host
 
@@ -2494,7 +2520,8 @@ class UserConn(Selectable):
       # FIXME: Use the tracked data to detect & mitigate abuse?
       return self
     else:
-      self.Log([('err', 'No back-end'), ('on_port', on_port), ('proto', self.proto), ('domain', self.host), ('is', 'FE')])
+      self.LogDebug('No back-end', [('on_port', on_port), ('proto', self.proto),
+                                    ('domain', self.host), ('is', 'FE')])
       return None
 
   def _BackEnd(proto, host, sid, tunnel, on_port, remote_ip=None, remote_port=None):
@@ -2547,7 +2574,7 @@ class UserConn(Selectable):
       self.fd.setblocking(0)
 
     except socket.error, err:
-      logInfo.append(('err', '%s' % err))
+      logInfo.append(('socket_error', '%s' % err))
       self.Log(logInfo)
       Selectable.Cleanup(self)
       return None
@@ -2571,15 +2598,14 @@ class UserConn(Selectable):
         else:
           self.fd.shutdown(direction)
     except Exception, e:
-#     self.LogDebug('Shutdown (%s/%s) error: %s' % (direction, self.fd, e))
       pass
 
   def ProcessTunnelEof(self, read_eof=False, write_eof=False):
     if read_eof and not self.write_eof:
       self.ProcessEofWrite(tell_tunnel=False)
-
     if write_eof and not self.read_eof:
       self.ProcessEofRead(tell_tunnel=False)
+    return True
 
   def ProcessEofRead(self, tell_tunnel=True):
     if tell_tunnel and self.tunnel:
@@ -2878,7 +2904,7 @@ class TunnelManager(threading.Thread):
     dead = {}
     for tid in self.conns.tunnels:
       for tunnel in self.conns.tunnels[tid]:
-        grace = max(40, len(tunnel.write_blocked)/tunnel.write_speed)
+        grace = max(40, len(tunnel.write_blocked)/(tunnel.write_speed or 0.001))
         if tunnel.last_activity < tunnel.last_ping-(5+grace):
           dead['%s' % tunnel] = tunnel
         elif tunnel.last_activity < now-30 and tunnel.last_ping < now-2:
@@ -2990,6 +3016,7 @@ class PageKite(object):
     except Exception, e:
       # The above stuff may fail in some cases, e.g. on Android in SL4A.
       self.rcfile = 'pagekite.cfg'
+      self.devnull = '/dev/null'
 
     if not os.path.exists(self.rcfile):
       for rcf in ('pagekite.rc', 'pagekite.cfg'):
@@ -3148,7 +3175,6 @@ class PageKite(object):
 
   def LookupDomainQuota(self, lookup):
     if not lookup.endswith('.'): lookup += '.'
-    #LogDebug('Lookup: %s' % lookup)
     ip = socket.gethostbyname(lookup)
 
     # If not an authentication error, quota should be encoded as an IP.
@@ -3165,8 +3191,8 @@ class PageKite(object):
   def GetDomainQuota(self, protoport, domain, srand, token, sign,
                      recurse=True, check_token=True):
     if '-' in protoport:
-      proto, port = protoport.split('-')
       try:
+        proto, port = protoport.split('-', 1)
         if proto == 'raw':
           port_list = self.server_raw_ports
         else:
@@ -3175,29 +3201,30 @@ class PageKite(object):
         porti = int(port)
         if porti in self.server_aliasport: porti = self.server_aliasport[porti]
         if porti not in port_list and VIRTUAL_PN not in port_list:
-          LogError('Unsupported port request: %s (%s:%s)' % (porti, protoport, domain))
+          LogInfo('Unsupported port request: %s (%s:%s)' % (porti, protoport, domain))
           return None
 
       except ValueError:
-        LogError('Invalid port request: %s (%s:%s)' % (port, protoport, domain))
+        LogError('Invalid port request: %s:%s' % (protoport, domain))
         return None
     else:
       proto, port = protoport, None
 
     if proto not in self.server_protos:
-      LogError('Invalid proto request: %s (%s:%s)' % (proto, protoport, domain))
+      LogInfo('Invalid proto request: %s:%s' % (protoport, domain))
       return None
 
     data = '%s:%s:%s' % (protoport, domain, srand)
     if (not token) or (not check_token) or checkSignature(sign=token, payload=data):
       if self.auth_domain:
-        lookup = '.'.join([srand, token, sign, protoport, domain, self.auth_domain])
         try:
+          lookup = '.'.join([srand, token, sign, protoport, domain, self.auth_domain])
           rv = self.LookupDomainQuota(lookup)
           if rv is None or rv >= 0: return rv
-        except Exception:
-          # Lookup failed, fall through to local test.
-          pass
+        except Exception, e:
+          # Lookup failed, fail open.
+          LogError('Quota lookup failed: %s' % e)
+          return -2
 
       secret = self.GetBackendData(protoport, domain, BE_SECRET)
       if not secret: secret = self.GetBackendData(proto, domain, BE_SECRET)
@@ -3208,7 +3235,7 @@ class PageKite(object):
           LogError('Invalid signature for: %s (%s)' % (domain, protoport))
           return None
 
-    LogError('No authentication found for: %s (%s)' % (domain, protoport))
+    LogInfo('No authentication found for: %s (%s)' % (domain, protoport))
     return None
 
   def ConfigureFromFile(self, filename=None):
@@ -3443,7 +3470,13 @@ class PageKite(object):
     self.servers_preferred = []
 
     # Enable internal loopback
-    if self.isfrontend: self.servers.append(LOOPBACK_FE)
+    if self.isfrontend:
+      need_loopback = False
+      for be in self.backends.values():
+        if be[BE_BACKEND]:
+          need_loopback = True
+      if need_loopback:
+        self.servers.append(LOOPBACK_FE)
 
     # Convert the hostnames into IP addresses...
     for server in self.servers_manual:
@@ -3510,7 +3543,7 @@ class PageKite(object):
             connections += 1
           else:
             failures += 1
-            Log([('err', 'Failed to connect'), ('FE', server)])
+            LogInfo('Failed to connect', [('FE', server)])
 
     if self.dyndns:
       updates = {}
@@ -3559,10 +3592,10 @@ class PageKite(object):
             if result.startswith('good') or result.startswith('nochg'):
               Log([('dyndns', result), ('data', update)])
             else:
-              LogError('DynDNS update failed: %s' % result, [('data', update)])
+              LogInfo('DynDNS update failed: %s' % result, [('data', update)])
               failures += 1
           except Exception, e:
-            LogError('DynDNS update failed: %s' % e, [('data', update)])
+            LogInfo('DynDNS update failed: %s' % e, [('data', update)])
             failures += 1
       if not self.last_updates:
         self.last_updates = last_updates
@@ -3572,18 +3605,11 @@ class PageKite(object):
   def LogTo(self, filename, close_all=True, dont_close=[]):
     global Log
 
-    # Try to open the file before we close everything, so errors don't get
-    # squelched.
-    try:
-      open(filename, "a").close()
-    except IOError, e:
-      raise ConfigError('%s' % e)
-
     if filename == 'memory':
       Log = LogToMemory
       filename = self.devnull
 
-    if filename == 'syslog':
+    elif filename == 'syslog':
       Log = LogSyslog
       filename = self.devnull
       syslog.openlog((sys.argv[0] or 'pagekite.py').split('/')[-1],
@@ -3591,10 +3617,13 @@ class PageKite(object):
 
     if filename != 'stdio':
       global LogFile
-      LogFile = fd = open(filename, "a", 0)
-      os.dup2(fd.fileno(), sys.stdin.fileno())
-      os.dup2(fd.fileno(), sys.stdout.fileno())
-      os.dup2(fd.fileno(), sys.stderr.fileno())
+      try:
+        LogFile = fd = open(filename, "a", 0)
+        os.dup2(fd.fileno(), sys.stdin.fileno())
+        os.dup2(fd.fileno(), sys.stdout.fileno())
+        os.dup2(fd.fileno(), sys.stderr.fileno())
+      except Exception, e:
+        raise ConfigError('%s' % e)
 
   def Daemonize(self):
     # Fork once...
@@ -3781,7 +3810,7 @@ def Main(pagekite, configure):
 
         pk.Start()
 
-      except (ValueError, ConfigError, getopt.GetoptError), msg:
+      except (ConfigError, getopt.GetoptError), msg:
         pk.FallDown(msg)
 
       except KeyboardInterrupt, msg:
